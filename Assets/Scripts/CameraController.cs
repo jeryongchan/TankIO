@@ -20,7 +20,7 @@ namespace TankIO
         private float edgeMarginFraction = 0.1f; // margin past the map edge as a fraction of the viewport
 
         [SerializeField]
-        private GridManager gridManager;
+        private TileGrid tileGrid;
 
         // world-space map bounds, pulled from the grid in RefreshClampLimits
         private float minX;
@@ -56,7 +56,7 @@ namespace TankIO
         // pull the map bounds from the grid; call again if the grid changes size.
         public void RefreshClampLimits()
         {
-            MapBounds b = gridManager.CalculateWorldMapBounds();
+            MapBounds b = tileGrid.CalculateWorldMapBounds();
             minX = b.minX;
             maxX = b.maxX;
             minZ = b.minZ;
@@ -70,9 +70,9 @@ namespace TankIO
                 return;
 
             Vector2 screenPos = mouse.position.ReadValue();
-            if (mouse.leftButton.wasPressedThisFrame)
+            if (mouse.rightButton.wasPressedThisFrame)
                 dragOrigin = GetWorldPoint(screenPos);
-            else if (mouse.leftButton.isPressed)
+            else if (mouse.rightButton.isPressed)
                 cam.transform.position += dragOrigin - GetWorldPoint(screenPos); // keep grabbed point under cursor
         }
 
