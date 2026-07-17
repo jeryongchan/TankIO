@@ -16,6 +16,10 @@ namespace TankIO
     [ExecuteAlways]
     public class TileGrid : MonoBehaviour
     {
+        // one grid per scene. tanks are spawned from a prefab, which cannot serialize a scene reference, so
+        // they reach the grid through here.
+        public static TileGrid Instance { get; private set; }
+
         [Header("Grid")]
         [SerializeField, Min(1)]
         private int width = 25;
@@ -48,6 +52,7 @@ namespace TankIO
 
         void Awake()
         {
+            Instance = this;
             BuildTiles();
         }
 

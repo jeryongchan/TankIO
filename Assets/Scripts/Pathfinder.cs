@@ -282,12 +282,12 @@ namespace TankIO
 
 // Notes
 // 1. OPEN does two jobs, CLOSED does one
-// CLOSED is only asked "is X in you?" → one array.
+// CLOSED is only asked "is X in you?" -> one array.
 
 // OPEN is asked two things:
 
-// lowest f? → ordering → MinHeap
-// is X in you? → membership → openSearchId[] (a heap answers this in O(n), too slow)
+// lowest f? -> ordering -> MinHeap
+// is X in you? -> membership -> openSearchId[] (a heap answers this in O(n), too slow)
 // No one structure does both, so OPEN is split in two. Always updated together: open.Push(i, f) + openSearchId[i] = searchId.
 
 // That's why 4 arrays vs the video's 2 sets. Same sets, different representation.
@@ -297,8 +297,8 @@ namespace TankIO
 // 2. Private nested class
 // Two walls:
 
-// private class MinHeap → only Pathfinder can even name the type.
-// public Pop() → "anyone who can see MinHeap may call this" — and only Pathfinder can. So it means "Pathfinder may call this." IsBefore/Swap stay private = the heap's own guts.
+// private class MinHeap -> only Pathfinder can even name the type.
+// public Pop() -> "anyone who can see MinHeap may call this", and only Pathfinder can. So it means "Pathfinder may call this." IsBefore/Swap stay private = the heap's own guts.
 // Rule: a member's accessibility is capped by its container's. public inside a private class isn't publicly reachable; it just marks the seam within that private world.
 
-// (All-private wouldn't compile — a nested class is still a separate class, so FindPath couldn't call open.Push.)
+// (All-private wouldn't compile: a nested class is still a separate class, so FindPath couldn't call open.Push.)
