@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
-using UnityEngine.InputSystem;
 
 namespace TankIO
 {
@@ -47,7 +46,8 @@ namespace TankIO
             new TripState { Path = Array.Empty<Vector2Int>() } // path is reference field, must not be null to be serialized
         );
 
-        private readonly NetworkVariable<int> health = new NetworkVariable<int>(100);
+        private const int MaxHealth = 100;
+        private readonly NetworkVariable<int> health = new NetworkVariable<int>(MaxHealth);
 
         // held until it dies or command overrides. server writes and replicated so every copy can aim its turret at it. 0 = none.
         private readonly NetworkVariable<ulong> currentTargetId = new NetworkVariable<ulong>();
@@ -61,6 +61,8 @@ namespace TankIO
 
         // every machine registers here; ShellSystem scans it to find what a shell met
         public static readonly List<TankController> SpawnedTanks = new List<TankController>();
+
+        private static readonly List<ulong> tanksToRepath = new List<ulong>(); // reused by every server trip write
 
         // statics outlive a play session when domain reload is off, so tanks from one session would leak into
         // the next. runs before the scene loads on every entry to play mode.
@@ -78,11 +80,9 @@ namespace TankIO
         private Trip renderedTrip; // which of the two the last frame drew, to notice a swap
         private int lastIssuedCommandId; // owner only: the latest command's id, so an old acknowledgement cannot end a newer command's prediction
         private ulong predictedTargetId; // owner only: the target the owner last commanded, aimed at immediately instead of waiting a round trip for currentTargetId
+        private TankHealthBar healthBar; // owner only, created on first selection
 
         private Vector3 positionError;
-
-        private readonly Plane groundPlane = new Plane(Vector3.up, Vector3.zero); // owner
-        private Camera mainCamera; // owner
 
         public override void OnNetworkSpawn()
         {
@@ -94,14 +94,14 @@ namespace TankIO
 
             if (IsServer)
             {
-                transform.position = SpawnPosition();
                 replicatedTripState.Value = new TripState
                 {
-                    StartPosition = transform.position,
+                    StartPosition = transform.position, // the spawner placed us before spawning
                     Path = Array.Empty<Vector2Int>(),
                     StartTime = 0.0,
                     AcknowledgedCommandId = 0
                 };
+                TripReservations.Write(NetworkObjectId, transform.position, Array.Empty<Vector2Int>(), 0.0, moveSpeed); // parked on the spawn tile
             }
             else
             {
@@ -109,15 +109,12 @@ namespace TankIO
                 NetworkManager.NetworkTimeSystem.HardResetThresholdSec = 1.0;
                 OnTripStateChanged(default, replicatedTripState.Value); // e.g. for late joiner, they will now get the repltripstate of the tank (stored in server before they join)
             }
-            if (IsOwner)
-            {
-                mainCamera = Camera.main;
-            }
         }
 
         public override void OnNetworkDespawn()
         {
             SpawnedTanks.Remove(this);
+            TripReservations.Release(NetworkObjectId); // server and client tables both hold entries
             replicatedTripState.OnValueChanged -= OnTripStateChanged;
         }
 
@@ -125,8 +122,6 @@ namespace TankIO
         {
             if (serverTrip == null)
                 return; // not spawned yet
-            if (IsOwner)
-                HandleClickCommand();
             if (IsServer)
             {
                 UpdateTargeting();
@@ -136,53 +131,44 @@ namespace TankIO
             Render();
         }
 
-        // left-click an enemy tank to target fire, left-click on empty tile to move.
-        void HandleClickCommand()
-        {
-            Mouse mouse = Mouse.current;
-            if (mouse == null || !mouse.leftButton.wasPressedThisFrame)
-                return;
-            Ray ray = mainCamera.ScreenPointToRay(mouse.position.ReadValue());
-            Keyboard keyboard = Keyboard.current;
-            if (keyboard != null && keyboard.ctrlKey.isPressed)
-            {
-                if (groundPlane.Raycast(ray, out float groundDistance))
-                    SubmitForceFireCommandRpc(ray.GetPoint(groundDistance));
-                return;
-            }
-            if (Physics.Raycast(ray, out RaycastHit hit))
-            {
-                TankController target = hit.collider.GetComponentInParent<TankController>();
-                if (target != null && target.OwnerClientId != OwnerClientId)
-                {
-                    HandleAttackCommand(target);
-                    return;
-                }
-            }
-            HandleMoveCommand(ray);
-        }
-
         // owner only submits input command (goal, i.e. target tile),
         // the server derives its own start point from its own clock, roughly a one-way latency further along than ours.
-        void HandleMoveCommand(Ray ray)
+        public void MoveTo(Vector2Int goal)
         {
-            if (!groundPlane.Raycast(ray, out float distance))
-                return;
-            if (!TileGrid.Instance.WorldToTile(ray.GetPoint(distance), out Vector2Int goal))
-                return; // clicked outside the grid
-
             lastIssuedCommandId++;
             double clickTime = NetworkManager.ServerTime.Time;
             Trip currentTrip = predictedTrip ?? serverTrip;
             Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
-            predictedTrip = PredictTrip(startPosition, goal, clickTime);
+            // path the click locally and drive it as the trip the server will answer with. the server's
+            // answer replaces it; a rare wrong guess just opens a position error.
+            predictedTrip = TripFromState(
+                new TripState
+                {
+                    StartPosition = startPosition,
+                    Path = PathOrStop(currentTrip, startPosition, goal, clickTime),
+                    StartTime = clickTime
+                }
+            );
             predictedTargetId = 0; // a move order overrides an attack order; drop the aim without waiting for the server
 
             SubmitMoveCommandRpc(goal, lastIssuedCommandId);
         }
 
+        public float HealthFraction
+        {
+            get { return (float)health.Value / MaxHealth; }
+        }
+
+        // the health bar doubles as the selection marker, so it exists only once this tank has been selected
+        public void SetSelected(bool selected)
+        {
+            if (healthBar == null)
+                healthBar = TankHealthBar.Create(this);
+            healthBar.gameObject.SetActive(selected);
+        }
+
         // the tank chases the target into range, then fires. the owner predicts the initial approach.
-        void HandleAttackCommand(TankController target)
+        public void Attack(TankController target)
         {
             lastIssuedCommandId++;
             double clickTime = NetworkManager.ServerTime.Time;
@@ -192,9 +178,14 @@ namespace TankIO
             Vector2Int[] path =
                 (targetPosition - startPosition).magnitude <= IdealFiringDistance
                     ? StopPath(currentTrip, clickTime)
-                    : ComputePath(startPosition, FiringTile(startPosition, targetPosition));
+                    : PathOrStop(currentTrip, startPosition, FiringTile(startPosition, targetPosition), clickTime);
             predictedTrip = TripFromState(
-                new TripState { StartPosition = startPosition, Path = path, StartTime = clickTime }
+                new TripState
+                {
+                    StartPosition = startPosition,
+                    Path = path,
+                    StartTime = clickTime
+                }
             );
             predictedTargetId = target.NetworkObjectId; // the turret starts its traverse now; the traverse masks the round trip
 
@@ -209,7 +200,7 @@ namespace TankIO
             // the start is server calculated based on owner's command. the owner set off ~one-way latency earlier.
             // that gap comes back with the acknowledgement and the error smoothing closes it.
             Vector3 startPosition = PositionAtTime(serverTrip, now);
-            WriteTripState(startPosition, ComputePath(startPosition, goal), now, commandId);
+            WriteTripState(startPosition, PathOrStop(serverTrip, startPosition, goal, now), now, commandId);
         }
 
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
@@ -220,9 +211,12 @@ namespace TankIO
             if (target == null || target.OwnerClientId == OwnerClientId)
                 return; // already dead or own tank
             currentTargetId.Value = targetObjectId;
-            // always write a trip stamped with this click's id, so it clears the owner's prediction through the ack path 
+            // always write a trip stamped with this click's id, so it clears the owner's prediction through the ack path
             // in range: move to the next tile centre, out of range: move to the firing tile.
-            if ((target.PositionAtTime(target.serverTrip, now) - PositionAtTime(serverTrip, now)).magnitude <= IdealFiringDistance)
+            if (
+                (target.PositionAtTime(target.serverTrip, now) - PositionAtTime(serverTrip, now)).magnitude
+                <= IdealFiringDistance
+            )
                 StopAtNextTile(now, commandId);
             else
                 IssueChaseTrip(target, now, commandId);
@@ -256,7 +250,7 @@ namespace TankIO
             float tripEndDistanceFromTarget = (targetPosition - serverTrip.EndPoint).magnitude;
             bool tripDeliversFiringPosition = tripEndDistanceFromTarget <= AttackRange;
             if (distance > IdealFiringDistance && !tripDeliversFiringPosition)
-                IssueChaseTrip(target, now, lastAcknowledgedCommandId);
+                TryImproveChaseTrip(target, now);
             else if (distance <= IdealFiringDistance && !AlreadyStopping(serverTrip, now))
                 StopAtNextTile(now, lastAcknowledgedCommandId); // target walked into range: stop early, keep firing
 
@@ -265,19 +259,51 @@ namespace TankIO
 
         // the tile to attack from: step back from the target to the ideal firing distance along the line to this tank.
         // callers guarantee the tank is farther than that, so the distance is never zero.
+        // a tile another tank has claimed as its park tile is skipped even when the claim has not begun yet:
+        // parking never ends, so arriving before the claimant only means it parks on top of us later.
+        // same rule PlayerCommander applies to a clicked tile, which is why a click cannot produce this stack.
         Vector2Int FiringTile(Vector3 selfPosition, Vector3 targetPosition)
         {
             Vector3 targetToSelf = selfPosition - targetPosition;
             Vector3 firingPosition = targetPosition + targetToSelf / targetToSelf.magnitude * IdealFiringDistance;
-            TileGrid.Instance.WorldToTile(firingPosition, out Vector2Int tile);
+            TileGrid.Instance.WorldToTile(firingPosition, out Vector2Int idealTile);
+            // ring radius stays 1 so the standoff cannot drift out of range; a farther tile would make the
+            // 0.3s chase check re-path toward the ring forever. all claimed: the ideal tile comes back, the
+            // path fails and the caller holds, same as blocked terrain.
+            TripReservations.TryNearestUnclaimedParkTile(idealTile, 1, NetworkObjectId, out Vector2Int tile);
             return tile;
         }
 
+        // click path: a command always answers with a trip, unreachable or not (see PathOrStop)
         void IssueChaseTrip(TankController target, double now, int commandId)
         {
             Vector3 startPosition = PositionAtTime(serverTrip, now);
             Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(target.serverTrip, now));
-            WriteTripState(startPosition, ComputePath(startPosition, goal), now, commandId);
+            WriteTripState(startPosition, PathOrStop(serverTrip, startPosition, goal, now), now, commandId);
+        }
+
+        // check path: the 0.3s check only writes improvements. an unreachable standoff writes nothing
+        // and is retried next check, instead of stopping the tank or spamming equivalent rewrites.
+        void TryImproveChaseTrip(TankController target, double now)
+        {
+            Vector3 startPosition = PositionAtTime(serverTrip, now);
+            Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(target.serverTrip, now));
+            Vector2Int[] path = ComputePath(startPosition, goal, now);
+            if (path.Length == 0)
+                return;
+            WriteTripState(startPosition, path, now, lastAcknowledgedCommandId);
+        }
+
+        // a route to the goal, or the stop at the next tile centre when no route exists. a command must
+        // always produce a trip (its id is the ack that clears the owner's prediction), and a tank must
+        // always come to rest on a tile centre, never mid-tile. covers start == goal for free: StopPath
+        // stops at the clicked tile's centre when driving and is empty at rest.
+        Vector2Int[] PathOrStop(Trip trip, Vector3 startPosition, Vector2Int goal, double startTime)
+        {
+            Vector2Int[] path = ComputePath(startPosition, goal, startTime);
+            if (path.Length == 0)
+                path = StopPath(trip, startTime);
+            return path;
         }
 
         // the remaining path of a stopping tank: the next tile centre of its trip, so a rest position always
@@ -333,7 +359,7 @@ namespace TankIO
 
         // for debug only; ctrl + click
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
-        void SubmitForceFireCommandRpc(Vector3 aimPoint)
+        public void SubmitForceFireCommandRpc(Vector3 aimPoint)
         {
             forceFireAim = aimPoint;
             forceFireArmed = true;
@@ -403,9 +429,26 @@ namespace TankIO
             ShellVisual.Impact(shellId, hitFraction, this);
         }
 
-        void WriteTripState(Vector3 startPosition, Vector2Int[] path, double startTime, int commandId)
+        // every branch that changes a trip funnels here: move and attack commands, the 0.3s targeting check,
+        // chase retries, park repaths, the spawn state. so a trip can never be written without its reservation.
+        // clients rewrite their own copy in OnTripStateChanged when the state lands.
+        void WriteTripState(
+            Vector3 startPosition,
+            Vector2Int[] path,
+            double startTime,
+            int commandId,
+            bool repathTanksCrossingParkTile = true
+        )
         {
             lastAcknowledgedCommandId = commandId;
+            TripReservations.Write(
+                NetworkObjectId,
+                startPosition,
+                path,
+                startTime,
+                moveSpeed,
+                repathTanksCrossingParkTile ? tanksToRepath : null
+            );
             replicatedTripState.Value = new TripState
             {
                 StartPosition = startPosition,
@@ -413,10 +456,43 @@ namespace TankIO
                 StartTime = startTime,
                 AcknowledgedCommandId = commandId
             };
+            if (repathTanksCrossingParkTile && tanksToRepath.Count > 0)
+            {
+                foreach (ulong tankId in tanksToRepath)
+                {
+                    TankController crossingTank = TankFromObjectId(tankId);
+                    if (crossingTank != null)
+                        crossingTank.RepathAroundPark(startTime);
+                }
+            }
+        }
+
+        // another tank parked on a tile this trip crosses later; the park was written after this trip,
+        // so the trip never saw it. reroute to the same goal through the reservation table, one ordinary
+        // server rewrite reusing the last acknowledged id. a repath never triggers repaths of its own:
+        // its goal and park tile are unchanged, so it would only re-find the same crossers.
+        void RepathAroundPark(double now)
+        {
+            Vector3 startPosition = PositionAtTime(serverTrip, now);
+            TileGrid.Instance.WorldToTile(serverTrip.EndPoint, out Vector2Int goal);
+            Vector2Int[] path = ComputePath(startPosition, goal, now);
+            if (path.Length == 0)
+                return; // no route around the park (or the goal itself is the park): keep the old trip and accept the clip
+            WriteTripState(startPosition, path, now, lastAcknowledgedCommandId, false);
         }
 
         void OnTripStateChanged(TripState previousState, TripState newState)
         {
+            // clients mirror the server's reservation table from replicated trips, so owner
+            // prediction sees the same traffic the server will route around
+            if (!IsServer)
+                TripReservations.Write(
+                    NetworkObjectId,
+                    newState.StartPosition,
+                    newState.Path,
+                    newState.StartTime,
+                    moveSpeed
+                );
             serverTrip = TripFromState(newState);
             // every command runs twice: predicted locally the moment it is issued, then for real when the server answers it.
             // the prediction stays in charge until a trip arrives carrying a command id at or past our latest, which is the
@@ -431,26 +507,16 @@ namespace TankIO
             }
         }
 
-        // owner: path the click locally and drive it as the trip the server will answer with. the server's answer
-        // replaces it; a rare wrong guess just opens a position error.
-        Trip PredictTrip(Vector3 startPosition, Vector2Int goal, double startTime)
-        {
-            return TripFromState(
-                new TripState
-                {
-                    StartPosition = startPosition,
-                    Path = ComputePath(startPosition, goal),
-                    StartTime = startTime
-                }
-            );
-        }
-
-        // the A* tiles after the start point. the start tile is skipped so the tank sets off toward the next tile, not back to prev's centre.
-        Vector2Int[] ComputePath(Vector3 startPosition, Vector2Int goal)
+        // the A* tiles after the start point. the start tile is skipped so the tank sets off toward the
+        // next tile, not back to prev's centre. tiles other tanks occupy at this tank's arrival time cost
+        // extra, so the route sidesteps predicted traffic where a detour is cheap and drives through where
+        // it is not. the owner predicts against its mirrored reservation table, so prediction and server
+        // route agree except when a trip replicates mid-click; the error smoothing absorbs that mismatch.
+        Vector2Int[] ComputePath(Vector3 startPosition, Vector2Int goal, double startTime)
         {
             if (
                 TileGrid.Instance.WorldToTile(startPosition, out Vector2Int start)
-                && pathfinder.FindPath(start, goal, pathBuffer)
+                && pathfinder.FindPath(start, goal, pathBuffer, NetworkObjectId, startTime, moveSpeed)
             )
             {
                 Vector2Int[] path = new Vector2Int[pathBuffer.Count - 1];
@@ -565,16 +631,6 @@ namespace TankIO
                 turretTurnSpeed * Time.deltaTime
             );
             turretWorldRotation = turret.rotation;
-        }
-
-        // temporary spawn logic. later move to edge spawn when have concentric map
-        Vector3 SpawnPosition()
-        {
-            Vector2Int center = new Vector2Int(TileGrid.Instance.Width / 2, TileGrid.Instance.Height / 2);
-            Vector2Int tile = center + new Vector2Int((int)OwnerClientId * 3 - 1, 0); // spread players out around center
-            Vector3 position = TileGrid.Instance.TileToWorldCenter(tile);
-            position.y = transform.position.y;
-            return position;
         }
 
         // a path with a start time, so it can be evaluated at any time.

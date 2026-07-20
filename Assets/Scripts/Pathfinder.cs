@@ -7,6 +7,8 @@ namespace TankIO
     {
         private const int StraightCost = 10;
         private const int DiagonalCost = 14; // ~sqrt(2) * StraightCost, for determinism
+        private const int ReservationPenalty = 15; // detour budget for crossing a moving tank's path: 1.5 straight tiles buys a sidestep. parked tanks are walls, not costs
+        private const bool BlockCornerCutPastTanks = false; // false lets diagonals thread the zero-width seam between diagonally-adjacent occupied tiles; hulls are wider, so it reads as clipping
 
         private static readonly Vector2Int[] neighborOffsets =
         {
@@ -26,6 +28,7 @@ namespace TankIO
         // openSearchId/closedSearchId hold the id of the search that last put a tile in that set, so bumping searchId empties both in O(1)
         // instead of clearing them: a tile is only in a set if its id matches the current search.
         private int[] gCost; // cost of the best known path from the start to this tile
+        private int[] gDistance; // same path's cost without penalties; kept apart so penalties don't distort arrival times
         private int[] parent; // the tile we reached this one from, for retracing the path
         private int[] openSearchId;
         private int[] closedSearchId;
@@ -34,6 +37,11 @@ namespace TankIO
         private int width;
         private int height;
 
+        // set per search by FindPath
+        private ulong pathingTankId; // a tank's own reservations never penalize it
+        private double tripStartTime;
+        private float tankMoveSpeed;
+
         public Pathfinder(TileGrid tileGrid)
         {
             this.tileGrid = tileGrid;
@@ -41,6 +49,7 @@ namespace TankIO
             height = tileGrid.Height;
             int tileCount = width * height;
             gCost = new int[tileCount];
+            gDistance = new int[tileCount];
             parent = new int[tileCount];
             openSearchId = new int[tileCount];
             closedSearchId = new int[tileCount];
@@ -49,8 +58,21 @@ namespace TankIO
         }
 
         // fills path with tiles from start to goal inclusive. false if unreachable.
-        public bool FindPath(Vector2Int start, Vector2Int goal, List<Vector2Int> path)
+        // entering a tile inside another tank's reserved time window costs extra (see TripReservations),
+        // so the route pays for a short sidestep around predicted traffic but keeps the straight line
+        // when every detour is long. soft cost: nothing becomes unreachable.
+        public bool FindPath(
+            Vector2Int start,
+            Vector2Int goal,
+            List<Vector2Int> path,
+            ulong tankId,
+            double startTime,
+            float moveSpeed
+        )
         {
+            pathingTankId = tankId;
+            tripStartTime = startTime;
+            tankMoveSpeed = moveSpeed;
             path.Clear();
 
             if (!tileGrid.IsWalkable(start) || !tileGrid.IsWalkable(goal))
@@ -62,6 +84,7 @@ namespace TankIO
             int startIndex = ToIndex(start);
             int goalIndex = ToIndex(goal);
             gCost[startIndex] = 0;
+            gDistance[startIndex] = 0;
             parent[startIndex] = -1;
             openSearchId[startIndex] = searchId;
             open.Push(startIndex, HeuristicCost(start, goal));
@@ -94,12 +117,33 @@ namespace TankIO
                     if (closedSearchId[neighborIndex] == searchId)
                         continue;
 
-                    int newGCost = gCost[current] + (isDiagonal ? DiagonalCost : StraightCost);
+                    int stepCost = isDiagonal ? DiagonalCost : StraightCost;
+                    int newGDistance = gDistance[current] + stepCost;
+
+                    // a tile someone parks on at arrival time is a wall; a moving tank crossing it is a cost.
+                    // a diagonal step also checks its two side tiles: it passes between them without entering
+                    // either, and hulls are wider than the zero-width corner gap.
+                    TripReservations.Occupation entered = OccupationAtArrival(neighbor, newGDistance);
+                    if (entered == TripReservations.Occupation.Parked)
+                        continue;
+                    int penalty = entered == TripReservations.Occupation.Transit ? ReservationPenalty : 0;
+                    if (isDiagonal && BlockCornerCutPastTanks)
+                    {
+                        TripReservations.Occupation sideA = OccupationAtArrival(new Vector2Int(neighbor.x, currentTile.y), newGDistance);
+                        TripReservations.Occupation sideB = OccupationAtArrival(new Vector2Int(currentTile.x, neighbor.y), newGDistance);
+                        if (sideA == TripReservations.Occupation.Parked || sideB == TripReservations.Occupation.Parked)
+                            continue; // cutting a corner through a parked hull
+                        if (sideA == TripReservations.Occupation.Transit || sideB == TripReservations.Occupation.Transit)
+                            penalty += ReservationPenalty;
+                    }
+
+                    int newGCost = gCost[current] + stepCost + penalty;
                     bool isInOpen = openSearchId[neighborIndex] == searchId;
                     if (isInOpen && newGCost >= gCost[neighborIndex]) // already reached it cheaper
                         continue;
 
                     gCost[neighborIndex] = newGCost;
+                    gDistance[neighborIndex] = newGDistance;
                     parent[neighborIndex] = current;
                     openSearchId[neighborIndex] = searchId;
                     open.Push(neighborIndex, newGCost + HeuristicCost(neighbor, goal)); // f = g + h
@@ -115,6 +159,15 @@ namespace TankIO
         //     return tileGrid.IsWalkable(from + new Vector2Int(offset.x, 0))
         //         && tileGrid.IsWalkable(from + new Vector2Int(0, offset.y));
         // }
+
+        // how the tile is occupied when the searching tank would arrive, after this much driving.
+        // arrival time comes from pure distance at the tank's speed.
+        private TripReservations.Occupation OccupationAtArrival(Vector2Int tile, int distanceCost)
+        {
+            double arrivalTime = tripStartTime + (double)distanceCost / StraightCost * tileGrid.TileSize / tankMoveSpeed;
+            double halfTileSeconds = 0.5 * tileGrid.TileSize / tankMoveSpeed;
+            return TripReservations.OccupationDuring(tile, arrivalTime - halfTileSeconds, arrivalTime + halfTileSeconds, pathingTankId);
+        }
 
         // h cost. octile distance, means can only go in 8-dir (unobstructed path).
         private static int HeuristicCost(Vector2Int from, Vector2Int to)

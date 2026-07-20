@@ -131,6 +131,7 @@ GameObject:
   - component: {fileID: 143508149}
   - component: {fileID: 143508148}
   - component: {fileID: 143508151}
+  - component: {fileID: 143508152}
   m_Layer: 0
   m_Name: NetworkManager
   m_TagString: Untagged
@@ -185,7 +186,7 @@ MonoBehaviour:
   NetworkConfig:
     ProtocolVersion: 0
     NetworkTransport: {fileID: 143508148}
-    PlayerPrefab: {fileID: 112895461554733589, guid: fa395f579a9eb2a4ebd028a881b5ef76, type: 3}
+    PlayerPrefab: {fileID: 0}
     Prefabs:
       NetworkPrefabsLists:
       - {fileID: 11400000, guid: 7af2949a398d336409174dbf62c30eaa, type: 2}
@@ -251,6 +252,19 @@ MonoBehaviour:
     RefIds:
     - rid: -2
       type: {class: , ns: , asm: }
+--- !u!114 &143508152
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 143508146}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9c2134455089b4343985a3387d58f169, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TankIO.TankSpawner
+  tankPrefab: {fileID: 112895461554733589, guid: fa395f579a9eb2a4ebd028a881b5ef76, type: 3}
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0
@@ -851,10 +865,7 @@ MonoBehaviour:
   width: 25
   height: 25
   tileSize: 1
-  blockedTiles:
-  - {x: 13, y: 13}
-  - {x: 13, y: 12}
-  - {x: 13, y: 11}
+  blockedTiles: []
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
