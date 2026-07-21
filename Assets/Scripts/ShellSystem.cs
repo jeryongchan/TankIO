@@ -4,12 +4,23 @@ using UnityEngine;
 
 namespace TankIO
 {
-    // shells belong to no tank: the one that fired can die mid-flight, and a shell can hit a tank it was never
+    // shells belong to no tank: the one that fired can die mid-flight, and a shell can hit a target it was never
     // aimed at. so they are simulated once here, server side, instead of from whichever tank happened to fire.
     // each shell carries its own stats, so this knows nothing about tanks beyond where they are.
     public class ShellSystem : MonoBehaviour
     {
         public static ShellSystem Instance { get; private set; }
+
+        // everything a shell can meet; tanks and HQs register on every machine (the scan is server-only,
+        // but clients read the list too, e.g. the garrison tracer resolving its victim)
+        public static readonly List<IShellTarget> Targets = new List<IShellTarget>();
+
+        // statics outlive a play session when domain reload is off
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void ResetSessionState()
+        {
+            Targets.Clear();
+        }
 
         private readonly List<Shell> liveShells = new List<Shell>();
         private int lastShellId;
@@ -23,6 +34,21 @@ namespace TankIO
             Instance = systemObject.AddComponent<ShellSystem>();
         }
 
+        // the registered target behind a NetworkObject id, null when despawned or not a target
+        public static IShellTarget TargetFromObjectId(ulong objectId)
+        {
+            if (objectId == 0)
+                return null;
+            if (
+                !NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(
+                    objectId,
+                    out NetworkObject networkObject
+                )
+            )
+                return null;
+            return networkObject.GetComponent<IShellTarget>();
+        }
+
         // returns the id naming this shell on every machine, so the shot event can name its visual
         public int Fire(
             Vector3 muzzlePosition,
@@ -30,7 +56,6 @@ namespace TankIO
             double fireTime,
             ulong shooterClientId,
             float speed,
-            float hitRadius,
             int damage
         )
         {
@@ -44,7 +69,6 @@ namespace TankIO
                     fireTime = fireTime,
                     shooterClientId = shooterClientId,
                     speed = speed,
-                    hitRadius = hitRadius,
                     damage = damage
                 }
             );
@@ -52,7 +76,8 @@ namespace TankIO
         }
 
         // hit or miss is decided here, per frame, by distance; the flight everyone sees is cosmetic.
-        // a shell hits the first enemy of its shooter it meets, not necessarily the tank it was aimed at
+        // a shell hits the first enemy of its shooter it meets, not necessarily the target it was aimed at.
+        // contact distance is the target's radius (a building is a wider point), not a shell property.
         // In future maybe can do Broad-phase for optimization
         void Update()
         {
@@ -67,27 +92,30 @@ namespace TankIO
                 float distanceTraveled = shell.speed * (float)(now - shell.fireTime);
                 Vector3 shellPosition = Vector3.MoveTowards(shell.muzzlePosition, shell.aimPoint, distanceTraveled);
 
-                TankController hitTank = null;
-                float hitDistanceSquared = shell.hitRadius * shell.hitRadius;
-                foreach (TankController tank in TankController.SpawnedTanks)
+                IShellTarget hitTarget = null;
+                float bestOverlap = 0f; // how far inside its radius the shell sits; deepest wins when several overlap
+                foreach (IShellTarget target in Targets)
                 {
-                    if (tank.OwnerClientId == shell.shooterClientId)
-                        continue; // friendly tanks never block
-                    float distanceSquared = (shellPosition - tank.PositionAtTime(now)).sqrMagnitude;
-                    if (distanceSquared <= hitDistanceSquared)
+                    if (target.OwnerClientId == shell.shooterClientId)
+                        continue; // friendly targets never block
+                    if (!target.Attackable)
+                        continue;
+                    float distance = (shellPosition - target.PositionAtTime(now)).magnitude;
+                    float overlap = target.HitRadius - distance;
+                    if (overlap > bestOverlap)
                     {
-                        hitTank = tank; // nearest wins when several overlap the shell
-                        hitDistanceSquared = distanceSquared;
+                        hitTarget = target;
+                        bestOverlap = overlap;
                     }
                 }
 
-                if (hitTank != null)
+                if (hitTarget != null)
                 {
                     liveShells.RemoveAt(index);
                     // fraction of the flight, not meters: each machine flies from its own drawn muzzle, so line lengths differ.
-                    //  overlapping tanks can make a zero-length flight, hence the guard.
+                    //  overlapping targets can make a zero-length flight, hence the guard.
                     float hitFraction = flightLength > 0f ? distanceTraveled / flightLength : 0f;
-                    hitTank.TakeShellHit(shell.shellId, hitFraction, shell.damage);
+                    hitTarget.TakeShellHit(shell.shellId, hitFraction, shell.damage, shell.shooterClientId);
                 }
                 else if (distanceTraveled >= flightLength)
                 {
@@ -103,9 +131,8 @@ namespace TankIO
             public Vector3 muzzlePosition;
             public Vector3 aimPoint;
             public double fireTime;
-            public ulong shooterClientId; // the shooter's own tanks never block its shells
+            public ulong shooterClientId; // the shooter's own targets never block its shells
             public float speed;
-            public float hitRadius;
             public int damage;
         }
     }

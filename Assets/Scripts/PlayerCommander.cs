@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 
 namespace TankIO
@@ -12,6 +13,7 @@ namespace TankIO
         private const float BoxBorderThickness = 2f;
 
         private readonly List<TankController> selection = new List<TankController>();
+        private HqController selectedHq; // never selected together with tanks: picking either deselects the other
         private readonly Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
         private Camera mainCamera;
 
@@ -19,13 +21,15 @@ namespace TankIO
         private Vector2 dragStartScreenPosition;
         private Vector2 dragCurrentScreenPosition;
 
+        public static PlayerCommander Instance { get; private set; } // the tank strip routes slot clicks here
+
         // nothing here is authored, so it creates itself rather than needing a scene object someone can forget
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void Create()
         {
             GameObject commanderObject = new GameObject(nameof(PlayerCommander));
             DontDestroyOnLoad(commanderObject);
-            commanderObject.AddComponent<PlayerCommander>();
+            Instance = commanderObject.AddComponent<PlayerCommander>();
         }
 
         void Start()
@@ -53,6 +57,8 @@ namespace TankIO
 
             if (mouse.leftButton.wasPressedThisFrame)
             {
+                if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
+                    return; // the strip owns this press; the UI raycast consumes it and no world order fires
                 dragStartScreenPosition = mousePosition;
                 dragCurrentScreenPosition = mousePosition;
                 dragging = true;
@@ -63,12 +69,46 @@ namespace TankIO
             if (!mouse.leftButton.wasReleasedThisFrame)
                 return;
 
+            if (!dragging)
+                return; // the press landed on the strip, so the release is not ours either
             dragging = false;
             RemoveDestroyedTanks();
             if (IsDragPastThreshold(mousePosition))
                 SelectInsideBox(dragStartScreenPosition, mousePosition);
             else
                 HandleClick(mousePosition);
+        }
+
+        void LateUpdate()
+        {
+            UpdateHqMovePreview();
+        }
+
+        // the confirm flow is hover-shows-cost, click-commits: the preview is the only UI the move needs
+        void UpdateHqMovePreview()
+        {
+            HudCursorLabel.Hide();
+            if (selectedHq == null || Mouse.current == null)
+                return;
+            Vector2 mousePosition = Mouse.current.position.ReadValue();
+            Ray ray = mainCamera.ScreenPointToRay(mousePosition);
+            if (!groundPlane.Raycast(ray, out float groundDistance))
+                return;
+            if (!TileGrid.Instance.WorldToTile(ray.GetPoint(groundDistance), out Vector2Int tile))
+                return;
+            tile = CapitalController.SnapToDock(tile); // preview the tile the confirm will actually use
+
+            double now = NetworkManager.Singleton.ServerTime.Time;
+            if (!selectedHq.IsParked(now))
+                HudCursorLabel.Show("in transit", Color.red, mousePosition);
+            else if (!selectedHq.IsValidDestination(tile))
+                HudCursorLabel.Show("blocked", Color.red, mousePosition);
+            else
+            {
+                float cost = HqController.MoveCost(selectedHq.HomeTile, tile);
+                bool affordable = selectedHq.Gold(now) >= cost;
+                HudCursorLabel.Show($"move: {cost:0} gold", affordable ? Color.green : Color.red, mousePosition);
+            }
         }
 
         bool IsDragPastThreshold(Vector2 endScreenPosition) // only count as drag once past threshold
@@ -107,9 +147,39 @@ namespace TankIO
                 return;
             }
 
+            HqController clickedHq = HqUnderCursor(ray);
+            if (clickedHq != null)
+            {
+                if (clickedHq.IsOwner)
+                {
+                    // with tanks selected, clicking home is an order (recall); with nothing selected, a pick
+                    if (selection.Count > 0)
+                    {
+                        foreach (TankController tank in selection)
+                            tank.ReturnToHq(clickedHq);
+                    }
+                    else
+                    {
+                        DeselectAll();
+                        selectedHq = clickedHq;
+                    }
+                }
+                else
+                {
+                    foreach (TankController tank in selection)
+                        tank.Attack(clickedHq); // siege: same standing order as attacking a tank
+                }
+                return;
+            }
+
             groundPlane.Raycast(ray, out float groundDistance); // return grounddistance
             if (!TileGrid.Instance.WorldToTile(ray.GetPoint(groundDistance), out Vector2Int goal))
                 return; // clicked outside the grid
+            if (selectedHq != null)
+            {
+                selectedHq.RequestMove(CapitalController.SnapToDock(goal)); // hover already showed the cost; this click is the confirm
+                return;
+            }
             MoveSelectionTo(goal);
         }
 
@@ -179,11 +249,20 @@ namespace TankIO
             tank.SetSelected(true);
         }
 
+        // a tank-strip slot click: same result as clicking the tank on the map
+        public void SelectSingle(TankController tank)
+        {
+            RemoveDestroyedTanks();
+            DeselectAll();
+            AddToSelection(tank);
+        }
+
         void DeselectAll()
         {
             foreach (TankController tank in selection)
                 tank.SetSelected(false);
             selection.Clear();
+            selectedHq = null;
         }
 
         // a selected tank can be destroyed while it is still selected
@@ -203,6 +282,13 @@ namespace TankIO
             return hit.collider.GetComponentInParent<TankController>();
         }
 
+        static HqController HqUnderCursor(Ray ray)
+        {
+            if (!Physics.Raycast(ray, out RaycastHit hit))
+                return null;
+            return hit.collider.GetComponentInParent<HqController>();
+        }
+
         static Rect ScreenRect(Vector2 corner, Vector2 oppositeCorner)
         {
             Vector2 min = Vector2.Min(corner, oppositeCorner);
@@ -210,7 +296,8 @@ namespace TankIO
             return new Rect(min, max - min);
         }
 
-        void OnGUI() // might need replace in future
+        // the drag box stays IMGUI: four stretched textures, no interaction, nothing a canvas would improve
+        void OnGUI()
         {
             if (!dragging || !IsDragPastThreshold(dragCurrentScreenPosition))
                 return;

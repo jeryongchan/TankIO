@@ -19,7 +19,7 @@ namespace TankIO
         private float speed;
         private float hitRadius;
         private float serverHitFraction = float.PositiveInfinity; // the server's impact as a fraction of the flight, applied when the local flight reaches it
-        private TankController serverHitTank;
+        private Component serverHitTarget; // tank or HQ; only its drawn transform is read
 
         public static void Spawn(
             int shellId,
@@ -47,20 +47,20 @@ namespace TankIO
             visualsByShellId[shellId] = shell;
         }
 
-        // the server resolved this shell as a hit on hitTank. the fraction says when along the flight, so an event
-        // arriving early (the local clock trails the server) cannot cut the shell off midair. the marker then rides
-        // hitTank's locally drawn body, not the stale committed point the shell flew to.
-        public static void Impact(int shellId, float hitFraction, TankController hitTank)
+        // the server resolved this shell as a hit on hitTarget (tank or HQ). the fraction says when along the
+        // flight, so an event arriving early (the local clock trails the server) cannot cut the shell off midair.
+        // the marker then rides hitTarget's locally drawn body, not the stale committed point the shell flew to.
+        public static void Impact(int shellId, float hitFraction, Component hitTarget)
         {
             if (visualsByShellId.TryGetValue(shellId, out ShellVisual shell))
             {
                 shell.serverHitFraction = Mathf.Min(hitFraction, 1f); // clamped so a known hit always resolves before the generic landing
-                shell.serverHitTank = hitTank;
+                shell.serverHitTarget = hitTarget;
             }
             else
             {
-                // the shell already landed and took its position with it, so this marks the tank, not the contact point
-                SpawnDebugMarker(hitTank.transform.position + Vector3.up * 0.8f, Color.green);
+                // the shell already landed and took its position with it, so this marks the target, not the contact point
+                SpawnDebugMarker(hitTarget.transform.position + Vector3.up * 0.8f, Color.green);
             }
         }
 
@@ -81,11 +81,11 @@ namespace TankIO
             float serverHitDistance = serverHitFraction * flightLength;
             if (distanceTraveled >= serverHitDistance)
             {
-                if (serverHitTank != null)
-                    MarkHitOn(serverHitTank); // marker rides the hit tank, wherever it is drawn here
+                if (serverHitTarget != null)
+                    MarkHitOn(serverHitTarget); // marker rides the hit target, wherever it is drawn here
                 else
                 {
-                    // the hit despawned the tank (a killing blow), so there is no body to ride; mark where the shell is
+                    // the hit despawned the target (a killing blow), so there is no body to ride; mark where the shell is
                     SpawnDebugMarker(transform.position, Color.green);
                     Destroy(gameObject);
                 }
@@ -99,12 +99,12 @@ namespace TankIO
             }
         }
 
-        // the marker sits in world space on the tank's surface facing the shell, marking where contact happened.
-        // it does not follow the tank: a moving tank drives out from under it over the marker's lifetime.
-        void MarkHitOn(TankController tank)
+        // the marker sits in world space on the target's surface facing the shell, marking where contact happened.
+        // it does not follow the target: a moving tank drives out from under it over the marker's lifetime.
+        void MarkHitOn(Component target)
         {
-            Vector3 contactOffset = (transform.position - tank.transform.position).normalized * hitRadius;
-            SpawnDebugMarker(tank.transform.position + contactOffset, Color.green);
+            Vector3 contactOffset = (transform.position - target.transform.position).normalized * hitRadius;
+            SpawnDebugMarker(target.transform.position + contactOffset, Color.green);
             Destroy(gameObject);
         }
 

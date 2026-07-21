@@ -94,6 +94,37 @@ namespace TankIO
             }
         }
 
+        // parked claims for a building footprint, all open-ended. no release here: the HQ holds its origin
+        // and its destination under two identities during a move, so what to release and when is the caller's
+        // decision, not this table's.
+        public static void AddParkedTiles(ulong id, List<Vector2Int> tiles, double enterTime)
+        {
+            foreach (Vector2Int tile in tiles)
+                Add(id, tile, enterTime, double.MaxValue);
+        }
+
+        // tanks whose finite windows on any of these tiles extend past fromTime
+        // trips written before the claim existed, which would drive through it. 
+        // open-ended holders are parkers, not crossers: skipped.
+        public static void FindTanksCrossingTiles(List<Vector2Int> tiles, double fromTime, List<ulong> results)
+        {
+            results.Clear();
+            foreach (Vector2Int tile in tiles)
+            {
+                if (!reservationsByTile.TryGetValue(tile, out List<Reservation> reservations))
+                    continue;
+                foreach (Reservation reservation in reservations)
+                {
+                    if (
+                        reservation.LeaveTime != double.MaxValue
+                        && reservation.LeaveTime > fromTime
+                        && !results.Contains(reservation.TankId)
+                    )
+                        results.Add(reservation.TankId);
+                }
+            }
+        }
+
         public static void Release(ulong tankId)
         {
             if (!tilesByTank.TryGetValue(tankId, out List<Vector2Int> tiles))
@@ -232,6 +263,8 @@ namespace TankIO
         {
             if (!TileGrid.Instance.IsWalkable(tile))
                 return false;
+            if (CapitalController.CoversTile(tile))
+                return false; // solid building: every tank destination search skips it (park, deploy, recall, firing ring)
             ulong parkedTank = ParkedTankAt(tile);
             if (parkedTank == 0 || parkedTank == ignoredTankId)
                 return true;

@@ -33,17 +33,35 @@ namespace TankIO
         private Vector3 dragOrigin;
         private float groundZOffset;
 
+        // the HQ jumps the camera here the moment it spawns, so the view starts on your own base
+        // instead of the middle of the map.
+        public static CameraController Instance { get; private set; }
+
+        private const float CameraDistance = 1000f; // so wont clip into large grid
+
         void Start()
         {
+            Instance = this;
             cam = GetComponent<Camera>();
             RefreshClampLimits();
-            Vector3 groundTarget = new Vector3((minX + maxX) * 0.5f, 0f, (minZ + maxZ) * 0.5f);
-            float cameraDistance = 1000f; // so wont clip into large grid
-            cam.transform.position = groundTarget - cam.transform.forward * cameraDistance;
-            cam.farClipPlane = Mathf.Max(cam.farClipPlane, cameraDistance * 2f);
+            PlaceAbove(new Vector3((minX + maxX) * 0.5f, 0f, (minZ + maxZ) * 0.5f));
+            cam.farClipPlane = Mathf.Max(cam.farClipPlane, CameraDistance * 2f);
 
             float tiltDegrees = transform.eulerAngles.x;
             groundZOffset = cam.transform.position.y / Mathf.Tan(Mathf.Deg2Rad * tiltDegrees);
+        }
+
+        public void CenterOn(Vector3 worldPoint)
+        {
+            if (cam == null)
+                cam = GetComponent<Camera>();
+            PlaceAbove(new Vector3(worldPoint.x, 0f, worldPoint.z));
+            ClampCamera();
+        }
+
+        void PlaceAbove(Vector3 groundTarget)
+        {
+            cam.transform.position = groundTarget - cam.transform.forward * CameraDistance;
         }
 
         void Update()
@@ -95,8 +113,7 @@ namespace TankIO
 
         void ClampCamera()
         {
-            // clamp the ground point the camera looks at, not the pivot: the tilt
-            // offsets them in Z.
+            // clamp the ground point the camera looks at, not the pivot: the tilt offsets them in Z.
             Vector3 p = cam.transform.position;
 
             p.x = ClampAxis(p.x, minX, maxX, ViewHalfExtentX()); // tilt is around X, so X shares pivot and ground point
@@ -129,9 +146,7 @@ namespace TankIO
         Vector3 GetWorldPoint(Vector2 screenPosition) // project a screen point onto the ground (y=0) plane
         {
             Ray ray = cam.ScreenPointToRay(screenPosition);
-            return groundPlane.Raycast(ray, out float distance)
-              ? ray.GetPoint(distance)
-              : Vector3.zero;
+            return groundPlane.Raycast(ray, out float distance) ? ray.GetPoint(distance) : Vector3.zero;
         }
     }
 }

@@ -11,7 +11,7 @@ namespace TankIO
     // client sends command (while also predict its own movement), the server sends the replicated path/trip,
     // the position error (disagreements) are closed smoothly (mostly by speeding up) instead of snapping (unless large gap).
 
-    public class TankController : NetworkBehaviour
+    public class TankController : NetworkBehaviour, IShellTarget
     {
         [SerializeField]
         private float moveSpeed = 5f;
@@ -35,9 +35,9 @@ namespace TankIO
         private const float AttackRange = 8f;
         private const float IdealFiringDistance = AttackRange * 0.85f; // a chase halts this deep inside range, so the target's jitter can't restart it
         private const float CooldownTime = 2f;
-        private const int Damage = 1;
+        private const int Damage = 10; // at full troops; MaxHealth 100 means a full tank takes 10 hits
         private const float ShellSpeed = 25f;
-        private const float HitRadius = 0.5f;
+        private const float TankHitRadius = 0.5f;
         private const float AimAngleTolerance = 10f; // a shot waits until the turret bears this close on the aim point
         private const double TargetCheckInterval = 0.3; // how often a tank re-decides who it is shooting at
 
@@ -48,6 +48,14 @@ namespace TankIO
 
         private const int MaxHealth = 100;
         private readonly NetworkVariable<int> health = new NetworkVariable<int>(MaxHealth);
+
+        // the troops this tank carries: its power, not its survivability. damage scales with them; health
+        // does not, which is what keeps the wounded-tank rotation play alive (a hurt tank still hits full).
+        private readonly NetworkVariable<int> troops = new NetworkVariable<int>(HqController.TroopsPerTank);
+        private bool debugFreeTank; // server only: took no troops from the pool, so death returns none
+
+        public const float WreckReturnSpeed = 1.5f; // slower than driving: an injured hull limping home. HqController re-runs the same arithmetic when a move re-anchors pending returns.
+        private bool recallActive; // server only: a standing order home, despawn-and-return on arrival
 
         // held until it dies or command overrides. server writes and replicated so every copy can aim its turret at it. 0 = none.
         private readonly NetworkVariable<ulong> currentTargetId = new NetworkVariable<ulong>();
@@ -80,7 +88,6 @@ namespace TankIO
         private Trip renderedTrip; // which of the two the last frame drew, to notice a swap
         private int lastIssuedCommandId; // owner only: the latest command's id, so an old acknowledgement cannot end a newer command's prediction
         private ulong predictedTargetId; // owner only: the target the owner last commanded, aimed at immediately instead of waiting a round trip for currentTargetId
-        private TankHealthBar healthBar; // owner only, created on first selection
 
         private Vector3 positionError;
 
@@ -90,6 +97,7 @@ namespace TankIO
                 pathfinder = new Pathfinder(TileGrid.Instance); // only the server routes commands, only the owner predicts
             replicatedTripState.OnValueChanged += OnTripStateChanged;
             SpawnedTanks.Add(this);
+            ShellSystem.Targets.Add(this);
             turretWorldRotation = turret.rotation;
 
             if (IsServer)
@@ -105,8 +113,6 @@ namespace TankIO
             }
             else
             {
-                // a client fixes small server-clock errors by slewing 1% (imperceptible) and big ones by jumping the clock, which teleports tanks. default was 0.2s. move to client bootstrap later.
-                NetworkManager.NetworkTimeSystem.HardResetThresholdSec = 1.0;
                 OnTripStateChanged(default, replicatedTripState.Value); // e.g. for late joiner, they will now get the repltripstate of the tank (stored in server before they join)
             }
         }
@@ -114,6 +120,7 @@ namespace TankIO
         public override void OnNetworkDespawn()
         {
             SpawnedTanks.Remove(this);
+            ShellSystem.Targets.Remove(this);
             TripReservations.Release(NetworkObjectId); // server and client tables both hold entries
             replicatedTripState.OnValueChanged -= OnTripStateChanged;
         }
@@ -159,22 +166,55 @@ namespace TankIO
             get { return (float)health.Value / MaxHealth; }
         }
 
-        // the health bar doubles as the selection marker, so it exists only once this tank has been selected
+        public int Troops
+        {
+            get { return troops.Value; }
+        }
+
+        public Vector3 DrawnPosition
+        {
+            get { return transform.position; }
+        }
+
+        public float HitRadius
+        {
+            get { return TankHitRadius; }
+        }
+
+        public bool Attackable
+        {
+            get { return true; }
+        }
+
+        // damage scales with troops, never below 1 so an emptied tank still plinks
+        int ScaledDamage
+        {
+            get { return Math.Max(1, Mathf.RoundToInt(Damage * (troops.Value / (float)HqController.TroopsPerTank))); }
+        }
+
+        // the deploy path stamps what the tank carries; a debug tank took nothing and returns nothing
+        public void ServerInitializeTroops(int troopCount, bool isDebugFree)
+        {
+            troops.Value = troopCount;
+            debugFreeTank = isDebugFree;
+        }
+
+        // the health bar doubles as the selection marker: WorldHealthBars draws it only while this is set
+        public bool IsSelected { get; private set; }
+
         public void SetSelected(bool selected)
         {
-            if (healthBar == null)
-                healthBar = TankHealthBar.Create(this);
-            healthBar.gameObject.SetActive(selected);
+            IsSelected = selected;
         }
 
         // the tank chases the target into range, then fires. the owner predicts the initial approach.
-        public void Attack(TankController target)
+        public void Attack(IShellTarget target)
         {
             lastIssuedCommandId++;
             double clickTime = NetworkManager.ServerTime.Time;
             Trip currentTrip = predictedTrip ?? serverTrip;
             Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
-            Vector3 targetPosition = target.PositionAtTime(target.serverTrip, clickTime);
+            Vector3 targetPosition = target.PositionAtTime(clickTime);
             Vector2Int[] path =
                 (targetPosition - startPosition).magnitude <= IdealFiringDistance
                     ? StopPath(currentTrip, clickTime)
@@ -192,11 +232,63 @@ namespace TankIO
             SubmitAttackCommandRpc(target.NetworkObjectId, lastIssuedCommandId);
         }
 
+        // drive next to the HQ, then despawn and hand back all troops. 
+        // just a trip plus a server flag, so any other click overwrites both and cancels the recall
+        public void ReturnToHq(HqController hq)
+        {
+            lastIssuedCommandId++;
+            double clickTime = NetworkManager.ServerTime.Time;
+            Trip currentTrip = predictedTrip ?? serverTrip;
+            Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
+            predictedTrip = TripFromState(
+                new TripState
+                {
+                    StartPosition = startPosition,
+                    Path = PathOrStop(currentTrip, startPosition, RecallGoal(hq), clickTime),
+                    StartTime = clickTime
+                }
+            );
+            predictedTargetId = 0; // a recall overrides an attack order; drop the aim without waiting for the server
+
+            SubmitRecallCommandRpc(lastIssuedCommandId);
+        }
+
+        [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+        void SubmitRecallCommandRpc(int commandId)
+        {
+            double now = NetworkManager.ServerTime.Time;
+            currentTargetId.Value = 0;
+            Vector3 startPosition = PositionAtTime(serverTrip, now);
+            HqController hq = HqController.ForOwner(OwnerClientId);
+            if (hq == null)
+            {
+                // no home to return to; still answer the command so the owner's prediction clears
+                StopAtNextTile(now, commandId);
+                return;
+            }
+            recallActive = true;
+            WriteTripState(startPosition, PathOrStop(serverTrip, startPosition, RecallGoal(hq), now), now, commandId);
+        }
+
+        // the nearest free tile beside the footprint. the spiral skips the HQ's own parked 3x3, so the
+        // first candidates are exactly the ring around it.
+        Vector2Int RecallGoal(HqController hq)
+        {
+            TripReservations.TryNearestUnclaimedParkTile(
+                hq.HomeTile,
+                HqController.FootprintRadius + 2,
+                NetworkObjectId,
+                out Vector2Int tile
+            );
+            return tile; // on total failure this is the footprint centre: the path fails, the tank stops, the recall check retries
+        }
+
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
         void SubmitMoveCommandRpc(Vector2Int goal, int commandId)
         {
             double now = NetworkManager.ServerTime.Time;
             currentTargetId.Value = 0; // a move order overrides an attack order
+            recallActive = false;
             // the start is server calculated based on owner's command. the owner set off ~one-way latency earlier.
             // that gap comes back with the acknowledgement and the error smoothing closes it.
             Vector3 startPosition = PositionAtTime(serverTrip, now);
@@ -207,20 +299,18 @@ namespace TankIO
         void SubmitAttackCommandRpc(ulong targetObjectId, int commandId)
         {
             double now = NetworkManager.ServerTime.Time;
-            TankController target = TankFromObjectId(targetObjectId);
-            if (target == null || target.OwnerClientId == OwnerClientId)
-                return; // already dead or own tank
+            IShellTarget target = ShellSystem.TargetFromObjectId(targetObjectId);
+            if (target == null || target.OwnerClientId == OwnerClientId || !target.Attackable)
+                return; // already dead, own target, or an HQ mid-glide
+            recallActive = false;
             currentTargetId.Value = targetObjectId;
             // always write a trip stamped with this click's id, so it clears the owner's prediction through the ack path
             // in range: move to the next tile centre, out of range: move to the firing tile.
-            if (
-                (target.PositionAtTime(target.serverTrip, now) - PositionAtTime(serverTrip, now)).magnitude
-                <= IdealFiringDistance
-            )
+            if ((target.PositionAtTime(now) - PositionAtTime(serverTrip, now)).magnitude <= IdealFiringDistance)
                 StopAtNextTile(now, commandId);
             else
                 IssueChaseTrip(target, now, commandId);
-            TryFire(target.NetworkObjectId, target.PositionAtTime(target.serverTrip, now), now); // first shot right away, not at the next check
+            TryFire(target.NetworkObjectId, target.PositionAtTime(now), now); // first shot right away, not at the next check
         }
 
         // fires whenever in range (driving or not); drives toward the target only while too far to fire.
@@ -231,18 +321,23 @@ namespace TankIO
                 return;
             targetCheckTimer = now + TargetCheckInterval; // tanks spawn at different moments, so checks stagger naturally
 
+            if (recallActive)
+            {
+                UpdateRecall(now);
+                return;
+            }
             if (currentTargetId.Value == 0)
                 return;
-            TankController target = TankFromObjectId(currentTargetId.Value);
-            if (target == null)
+            IShellTarget target = ShellSystem.TargetFromObjectId(currentTargetId.Value);
+            if (target == null || !target.Attackable)
             {
-                currentTargetId.Value = 0; // the clicked target died
+                currentTargetId.Value = 0; // the clicked target died (or packed up and left)
                 StopAtNextTile(now, lastAcknowledgedCommandId); // truncate the chase instead of ghost-driving the rest of the approach
                 return;
             }
 
             Vector3 myPosition = PositionAtTime(serverTrip, now);
-            Vector3 targetPosition = target.PositionAtTime(target.serverTrip, now);
+            Vector3 targetPosition = target.PositionAtTime(now);
             float distance = (targetPosition - myPosition).magnitude;
 
             // re-path only when the trip no longer ends within range
@@ -257,37 +352,67 @@ namespace TankIO
             TryFire(target.NetworkObjectId, targetPosition, now);
         }
 
+        // recall's periodic check, chase-shaped: arrived beside the footprint > complete;
+        // HQ relocated or the approach failed > repath toward its current home, writing only improvements.
+        void UpdateRecall(double now)
+        {
+            HqController hq = HqController.ForOwner(OwnerClientId);
+            if (hq == null)
+            {
+                recallActive = false; // the home despawned mid-drive; the trip finishes as an ordinary move
+                return;
+            }
+            Vector3 myPosition = PositionAtTime(serverTrip, now);
+            bool arrived = myPosition == serverTrip.EndPoint; // unity vec3 == has ~1e-5 tolerance
+            TileGrid.Instance.WorldToTile(arrived ? myPosition : serverTrip.EndPoint, out Vector2Int checkTile);
+            Vector2Int toHome = checkTile - hq.HomeTile;
+            bool besideFootprint = Math.Max(Math.Abs(toHome.x), Math.Abs(toHome.y)) <= HqController.FootprintRadius + 1;
+
+            if (arrived && besideFootprint)
+            {
+                // home: every troop climbs out and the tank stops existing. no wreck, no partial loss.
+                if (!debugFreeTank)
+                    hq.ReturnTroops(troops.Value, troops.Value);
+                NetworkObject.Despawn();
+                return;
+            }
+            if (besideFootprint)
+                return; // still rolling toward a valid spot
+            // the trip no longer ends at home (HQ moved, or the approach degraded to a stop): try again
+            Vector2Int goal = RecallGoal(hq);
+            Vector2Int[] path = ComputePath(myPosition, goal, now);
+            if (path.Length == 0)
+                return; // no route this check; retry next
+            WriteTripState(myPosition, path, now, lastAcknowledgedCommandId);
+        }
+
         // the tile to attack from: step back from the target to the ideal firing distance along the line to this tank.
         // callers guarantee the tank is farther than that, so the distance is never zero.
-        // a tile another tank has claimed as its park tile is skipped even when the claim has not begun yet:
-        // parking never ends, so arriving before the claimant only means it parks on top of us later.
-        // same rule PlayerCommander applies to a clicked tile, which is why a click cannot produce this stack.
         Vector2Int FiringTile(Vector3 selfPosition, Vector3 targetPosition)
         {
             Vector3 targetToSelf = selfPosition - targetPosition;
             Vector3 firingPosition = targetPosition + targetToSelf / targetToSelf.magnitude * IdealFiringDistance;
             TileGrid.Instance.WorldToTile(firingPosition, out Vector2Int idealTile);
-            // ring radius stays 1 so the standoff cannot drift out of range; a farther tile would make the
-            // 0.3s chase check re-path toward the ring forever. all claimed: the ideal tile comes back, the
-            // path fails and the caller holds, same as blocked terrain.
+            // ring radius stays 1 so the standoff cannot drift out of range;
+            // a farther tile would make the 0.3s chase check re-path toward the ring forever.
             TripReservations.TryNearestUnclaimedParkTile(idealTile, 1, NetworkObjectId, out Vector2Int tile);
             return tile;
         }
 
         // click path: a command always answers with a trip, unreachable or not (see PathOrStop)
-        void IssueChaseTrip(TankController target, double now, int commandId)
+        void IssueChaseTrip(IShellTarget target, double now, int commandId)
         {
             Vector3 startPosition = PositionAtTime(serverTrip, now);
-            Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(target.serverTrip, now));
+            Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(now));
             WriteTripState(startPosition, PathOrStop(serverTrip, startPosition, goal, now), now, commandId);
         }
 
         // check path: the 0.3s check only writes improvements. an unreachable standoff writes nothing
         // and is retried next check, instead of stopping the tank or spamming equivalent rewrites.
-        void TryImproveChaseTrip(TankController target, double now)
+        void TryImproveChaseTrip(IShellTarget target, double now)
         {
             Vector3 startPosition = PositionAtTime(serverTrip, now);
-            Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(target.serverTrip, now));
+            Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(now));
             Vector2Int[] path = ComputePath(startPosition, goal, now);
             if (path.Length == 0)
                 return;
@@ -332,7 +457,7 @@ namespace TankIO
         }
 
         // at rest, or moving to the trip's final tile. rewriting such a trip would change nothing it drives, but the
-        // rewrite re-anchors the start at the server's clock — and server rewrites skip the ack-time handover, so a
+        // rewrite re-anchors the start at the server's clock - and server rewrites skip the ack-time handover, so a
         // client owner would adopt it a one-way latency behind its own drawn tank and visibly wobble at the rest point.
         bool AlreadyStopping(Trip trip, double now)
         {
@@ -343,7 +468,7 @@ namespace TankIO
             return remaining[0] == endTile;
         }
 
-        static TankController TankFromObjectId(ulong objectId)
+        public static TankController TankFromObjectId(ulong objectId)
         {
             if (objectId == 0)
                 return null;
@@ -383,20 +508,60 @@ namespace TankIO
                 now,
                 OwnerClientId,
                 ShellSpeed,
-                HitRadius,
-                Damage
+                ScaledDamage
             );
             FiredRpc(shellId, targetObjectId, aimPoint, now); // broadcast to clients
             return true;
         }
 
         // a shell reached this tank. the shell system (server) decides contact; the tank applies the damage.
-        public void TakeShellHit(int shellId, float hitFraction, int damage)
+        public void TakeShellHit(int shellId, float hitFraction, int damage, ulong attackerClientId)
         {
+            HqController homeHq = HqController.ForOwner(OwnerClientId);
+            if (homeHq != null)
+                homeHq.MarkAggressor(attackerClientId); // my home garrison remembers who shot me
             ShellImpactRpc(shellId, hitFraction); // sent before the despawn below, or a killing blow could never announce itself
             health.Value -= damage;
             if (health.Value <= 0)
-                NetworkObject.Despawn();
+                Die();
+        }
+
+        // garrison fire: no shell, no impact event, just damage landing on the drawn tank
+        public void TakeGarrisonDamage(int damage)
+        {
+            health.Value -= damage;
+            if (health.Value <= 0)
+                Die();
+        }
+
+        // the tank leaves combat instantly; half its troops die, the survivors drive home as a wreck
+        // whose travel time is the redeploy cooldown - die deep, wait long. the server queues the troops
+        // to come back at the wreck's arrival; the wreck itself is a local visual on every machine.
+        void Die()
+        {
+            if (!debugFreeTank)
+            {
+                HqController hq = HqController.ForOwner(OwnerClientId);
+                if (hq != null)
+                {
+                    double now = NetworkManager.ServerTime.Time;
+                    Vector3 deathPosition = PositionAtTime(serverTrip, now);
+                    Vector3 homePosition = TileGrid.Instance.TileToWorldCenter(hq.HomeTile);
+                    homePosition.y = deathPosition.y; // drive level at tank height, same line the visuals fly
+                    hq.QueueWreckReturn(troops.Value / 2, troops.Value, deathPosition, homePosition, now);
+                    WreckRetreatRpc(deathPosition, homePosition, now); // before the despawn, like the impact event
+                }
+            }
+            NetworkObject.Despawn();
+        }
+
+        // this only starts the drawing. nobody reports the arrival: the wreck's drive and the server's
+        // timer for returning the troops are both computed from these values, so they finish together.
+        [Rpc(SendTo.ClientsAndHost)]
+        void WreckRetreatRpc(Vector3 deathPosition, Vector3 homePosition, double startTime)
+        {
+            // runs on the dying tank, so the owner id costs nothing to send; an HQ move finds this wreck by it
+            WreckVisual.Spawn(OwnerClientId, deathPosition, homePosition, startTime, WreckReturnSpeed);
         }
 
         // each machine flies its own local shell from its own drawn barrel tip.
@@ -406,9 +571,9 @@ namespace TankIO
         [Rpc(SendTo.ClientsAndHost)]
         void FiredRpc(int shellId, ulong targetObjectId, Vector3 aimPoint, double fireTime)
         {
-            TankController target = TankFromObjectId(targetObjectId);
+            IShellTarget target = ShellSystem.TargetFromObjectId(targetObjectId);
             if (target != null)
-                aimPoint = target.transform.position;
+                aimPoint = target.DrawnPosition;
             // the tracking turret may still be mid-swing; a shot snaps it onto the aim point so the shell never exits sideways
             Vector3 aimDirection = aimPoint - transform.position;
             aimDirection.y = 0f;
@@ -417,7 +582,7 @@ namespace TankIO
                 turret.rotation = Quaternion.LookRotation(aimDirection);
                 turretWorldRotation = turret.rotation; // or RenderTurret would restore the pre-snap cache and undo the snap
             }
-            ShellVisual.Spawn(shellId, muzzle.position, aimPoint, fireTime, ShellSpeed, HitRadius);
+            ShellVisual.Spawn(shellId, muzzle.position, aimPoint, fireTime, ShellSpeed, TankHitRadius);
         }
 
         // a shell reached a tank before its aim point. the fraction says when along the flight, so an event arriving
@@ -471,7 +636,7 @@ namespace TankIO
         // so the trip never saw it. reroute to the same goal through the reservation table, one ordinary
         // server rewrite reusing the last acknowledged id. a repath never triggers repaths of its own:
         // its goal and park tile are unchanged, so it would only re-find the same crossers.
-        void RepathAroundPark(double now)
+        public void RepathAroundPark(double now)
         {
             Vector3 startPosition = PositionAtTime(serverTrip, now);
             TileGrid.Instance.WorldToTile(serverTrip.EndPoint, out Vector2Int goal);
@@ -615,9 +780,9 @@ namespace TankIO
             Vector3 aimDirection = Vector3.zero;
             // the owner aims at its own last command instead of waiting a round trip for currentTargetId; a dead
             // predicted target resolves to null and the turret eases back, same as the replicated path.
-            TankController target = TankFromObjectId(IsOwner ? predictedTargetId : currentTargetId.Value);
+            IShellTarget target = ShellSystem.TargetFromObjectId(IsOwner ? predictedTargetId : currentTargetId.Value);
             if (target != null)
-                aimDirection = target.transform.position - transform.position;
+                aimDirection = target.DrawnPosition - transform.position;
             else if (forceFireArmed)
                 aimDirection = forceFireAim - transform.position; // server only; clients never have this armed
             aimDirection.y = 0f;

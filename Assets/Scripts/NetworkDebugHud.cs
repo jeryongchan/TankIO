@@ -13,7 +13,7 @@ namespace TankIO
             if (networkManager == null)
                 return; // not spawned yet, or already torn down
 
-            GUILayout.BeginArea(new Rect(10f, 10f, 200f, 200f));
+            GUILayout.BeginArea(new Rect(Screen.width - 210f, 10f, 200f, 200f)); // top-right, clear of the canvas HUD
 
             if (networkManager.IsClient || networkManager.IsServer)
             {

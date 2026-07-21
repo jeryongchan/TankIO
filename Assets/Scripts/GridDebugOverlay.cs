@@ -112,6 +112,8 @@ namespace TankIO
                     Vector2Int tile = new Vector2Int(col, row);
                     if (tileGrid.IsWalkable(tile))
                         continue;
+                    if (tileGrid.RingDepth01(tile) <= 0f)
+                        continue; // off the disc: not an obstacle, just not map
 
                     Vector3 center = tileGrid.TileToWorldCenter(tile);
                     center.y = lineHeight;

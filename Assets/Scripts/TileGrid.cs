@@ -33,6 +33,10 @@ namespace TankIO
         [SerializeField]
         private Vector2Int[] blockedTiles; // hand-placed obstacles to path around, for testing
 
+        [Header("Shape")]
+        [SerializeField, Tooltip("Playable area is a disc inscribed in width x height. Off when testing on a full square.")]
+        private bool discShaped = true;
+
         private TileData[,] tiles;
 
         public int Width
@@ -50,6 +54,31 @@ namespace TankIO
 
         public event System.Action GridChanged;
 
+        // tile-space centre of the map, in the same units as a Vector2Int tile coord.
+        public Vector2 CenterTileSpace
+        {
+            get { return new Vector2(width * 0.5f, height * 0.5f); }
+        }
+
+        // rim radius of the playable disc, in tiles.
+        public float Radius
+        {
+            get { return Mathf.Min(width, height) * 0.5f; }
+        }
+
+        // the one number every other system reads: 0 at the rim, 1 at the centre.
+        // gold rate, move cost and spawn placement are all curves over this.
+        public float RingDepth01(Vector2Int tile)
+        {
+            float distance = (TileCentreOffset(tile) - CenterTileSpace).magnitude;
+            return Mathf.Clamp01(1f - distance / Radius);
+        }
+
+        static Vector2 TileCentreOffset(Vector2Int tile)
+        {
+            return new Vector2(tile.x + 0.5f, tile.y + 0.5f);
+        }
+
         void Awake()
         {
             Instance = this;
@@ -59,10 +88,16 @@ namespace TankIO
         void BuildTiles()
         {
             tiles = new TileData[width, height];
+            Vector2 center = CenterTileSpace;
+            float radius = Radius;
             for (int row = 0; row < height; row++)
             {
                 for (int col = 0; col < width; col++)
-                    tiles[col, row].Walkable = true;
+                {
+                    Vector2Int tile = new Vector2Int(col, row);
+                    tiles[col, row].Walkable =
+                        !discShaped || (TileCentreOffset(tile) - center).sqrMagnitude <= radius * radius;
+                }
             }
 
             foreach (Vector2Int blocked in blockedTiles)
@@ -74,6 +109,8 @@ namespace TankIO
 
         public bool IsWalkable(Vector2Int tile)
         {
+            if (tiles == null)
+                BuildTiles(); // ExecuteAlways: a renderer's OnEnable can beat Awake after a domain reload
             return IsInsideGrid(tile) && tiles[tile.x, tile.y].Walkable;
         }
 
@@ -93,13 +130,14 @@ namespace TankIO
         // the grid's corner, so they index a TileData[,] directly.
         public Vector3 TileToWorldCenter(Vector2Int tile)
         {
+            return transform.TransformPoint(TileToLocalCenter(tile));
+        }
+
+        // untransformed tile centre. mesh builders want this: their vertices are local already.
+        public Vector3 TileToLocalCenter(Vector2Int tile)
+        {
             LineExtents(out float x0, out float x1, out float z0, out float z1);
-            Vector3 local = new Vector3(
-                x0 + (tile.x + 0.5f) * tileSize,
-                0f,
-                z0 + (tile.y + 0.5f) * tileSize
-            );
-            return transform.TransformPoint(local);
+            return new Vector3(x0 + (tile.x + 0.5f) * tileSize, 0f, z0 + (tile.y + 0.5f) * tileSize);
         }
 
         // tile containing a world point. false if the point falls outside the grid.

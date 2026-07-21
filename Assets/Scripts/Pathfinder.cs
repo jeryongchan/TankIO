@@ -108,6 +108,8 @@ namespace TankIO
                     Vector2Int neighbor = currentTile + offset;
                     if (!tileGrid.IsWalkable(neighbor))
                         continue;
+                    if (CapitalController.CoversTile(neighbor))
+                        continue; // solid building to tanks; walkable in the grid only so an HQ can dock
 
                     bool isDiagonal = offset.x != 0 && offset.y != 0;
                     // if (isDiagonal && !CanCutCorner(currentTile, offset))
