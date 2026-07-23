@@ -54,8 +54,32 @@ namespace TankIO
         private readonly NetworkVariable<int> troops = new NetworkVariable<int>(HqController.TroopsPerTank);
         private bool debugFreeTank; // server only: took no troops from the pool, so death returns none
 
+        // set by the deploy path before Spawn, so it rides the spawn payload and is never 0 on any machine
+        private readonly NetworkVariable<ulong> commanderId = new NetworkVariable<ulong>();
+
+        public ulong CommanderId
+        {
+            get { return commanderId.Value; }
+        }
+
+        // selection and the slots HUD ask this, not IsOwner: on a host, a bot's tanks are network-owned
+        // by the server and would read as the host player's.
+        public bool CommandedByLocalPlayer
+        {
+            get { return commanderId.Value == NetworkManager.LocalClientId; }
+        }
+
         public const float WreckReturnSpeed = 1.5f; // slower than driving: an injured hull limping home. HqController re-runs the same arithmetic when a move re-anchors pending returns.
         private bool recallActive; // server only: a standing order home, despawn-and-return on arrival
+
+        // fire at whatever comes in range, never touching the trip. set by an attack-move click, or by
+        // taking a hit while idle. replicated because the commanding player has no click to predict the
+        // server-picked targets from, so their turret must follow the server like everyone else's.
+        private readonly NetworkVariable<bool> autoAttackActive = new NetworkVariable<bool>();
+
+        private const double RetaliationSeconds = 5.0; // see autoAttackIsRetaliation
+        private bool autoAttackIsRetaliation; // server only: so we can know if the autoattack is triggered by attack-move, or by other tanks hitting you. main purpose is to expire the auto-attack from retaliation
+        private double autoAttackLastTargetTime; // server only: when auto-attack last had a target in range
 
         // held until it dies or command overrides. server writes and replicated so every copy can aim its turret at it. 0 = none.
         private readonly NetworkVariable<ulong> currentTargetId = new NetworkVariable<ulong>();
@@ -88,6 +112,7 @@ namespace TankIO
         private Trip renderedTrip; // which of the two the last frame drew, to notice a swap
         private int lastIssuedCommandId; // owner only: the latest command's id, so an old acknowledgement cannot end a newer command's prediction
         private ulong predictedTargetId; // owner only: the target the owner last commanded, aimed at immediately instead of waiting a round trip for currentTargetId
+        private bool predictedAutoAttack; // owner only: whether the latest click was an attack-move, until the server's autoAttackActive answer lands's
 
         private Vector3 positionError;
 
@@ -138,16 +163,15 @@ namespace TankIO
             Render();
         }
 
-        // owner only submits input command (goal, i.e. target tile),
-        // the server derives its own start point from its own clock, roughly a one-way latency further along than ours.
-        public void MoveTo(Vector2Int goal)
+        // the owner's half of every plain drive order (move, attack-move, recall): path the click locally
+        // and drive it as the trip the server will answer with. the server's answer replaces it; a rare
+        // wrong guess just opens a position error. always drops the aim without waiting for the server.
+        void PredictDrive(Vector2Int goal, bool autoAttack)
         {
             lastIssuedCommandId++;
             double clickTime = NetworkManager.ServerTime.Time;
             Trip currentTrip = predictedTrip ?? serverTrip;
             Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
-            // path the click locally and drive it as the trip the server will answer with. the server's
-            // answer replaces it; a rare wrong guess just opens a position error.
             predictedTrip = TripFromState(
                 new TripState
                 {
@@ -156,9 +180,24 @@ namespace TankIO
                     StartTime = clickTime
                 }
             );
-            predictedTargetId = 0; // a move order overrides an attack order; drop the aim without waiting for the server
+            predictedTargetId = 0;
+            predictedAutoAttack = autoAttack;
+        }
 
+        // owner only submits input command (goal, i.e. target tile),
+        // the server derives its own start point from its own clock, roughly a one-way latency further along than ours.
+        public void MoveTo(Vector2Int goal)
+        {
+            PredictDrive(goal, false);
             SubmitMoveCommandRpc(goal, lastIssuedCommandId);
+        }
+
+        // attack-move: the same trip as a move click; the server additionally fires at whatever
+        // comes in range along the way, without the tank ever stopping or chasing.
+        public void AttackMoveTo(Vector2Int goal)
+        {
+            PredictDrive(goal, true);
+            SubmitAttackMoveCommandRpc(goal, lastIssuedCommandId);
         }
 
         public float HealthFraction
@@ -199,6 +238,13 @@ namespace TankIO
             debugFreeTank = isDebugFree;
         }
 
+        // must run before Spawn: clients read CommanderId in OnNetworkSpawn-adjacent paths, so the value
+        // has to arrive inside the spawn payload, not as a later delta
+        public void ServerSetCommanderBeforeSpawn(ulong id)
+        {
+            commanderId.Value = id;
+        }
+
         // the health bar doubles as the selection marker: WorldHealthBars draws it only while this is set
         public bool IsSelected { get; private set; }
 
@@ -228,38 +274,32 @@ namespace TankIO
                 }
             );
             predictedTargetId = target.NetworkObjectId; // the turret starts its traverse now; the traverse masks the round trip
+            predictedAutoAttack = false;
 
             SubmitAttackCommandRpc(target.NetworkObjectId, lastIssuedCommandId);
         }
 
-        // drive next to the HQ, then despawn and hand back all troops. 
+        // drive next to the HQ, then despawn and hand back all troops.
         // just a trip plus a server flag, so any other click overwrites both and cancels the recall
         public void ReturnToHq(HqController hq)
         {
-            lastIssuedCommandId++;
-            double clickTime = NetworkManager.ServerTime.Time;
-            Trip currentTrip = predictedTrip ?? serverTrip;
-            Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
-            predictedTrip = TripFromState(
-                new TripState
-                {
-                    StartPosition = startPosition,
-                    Path = PathOrStop(currentTrip, startPosition, RecallGoal(hq), clickTime),
-                    StartTime = clickTime
-                }
-            );
-            predictedTargetId = 0; // a recall overrides an attack order; drop the aim without waiting for the server
-
+            PredictDrive(RecallGoal(hq), false);
             SubmitRecallCommandRpc(lastIssuedCommandId);
         }
 
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
         void SubmitRecallCommandRpc(int commandId)
         {
+            ExecuteRecall(commandId);
+        }
+
+        public void ExecuteRecall(int commandId)
+        {
             double now = NetworkManager.ServerTime.Time;
             currentTargetId.Value = 0;
+            autoAttackActive.Value = false;
             Vector3 startPosition = PositionAtTime(serverTrip, now);
-            HqController hq = HqController.ForOwner(OwnerClientId);
+            HqController hq = HqController.ForCommander(CommanderId);
             if (hq == null)
             {
                 // no home to return to; still answer the command so the owner's prediction clears
@@ -286,9 +326,28 @@ namespace TankIO
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
         void SubmitMoveCommandRpc(Vector2Int goal, int commandId)
         {
+            ExecuteMove(goal, commandId);
+        }
+
+        [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+        void SubmitAttackMoveCommandRpc(Vector2Int goal, int commandId)
+        {
+            ExecuteAttackMove(goal, commandId);
+        }
+
+        public void ExecuteAttackMove(Vector2Int goal, int commandId)
+        {
+            ExecuteMove(goal, commandId); // attack-move is a move order plus an ordered auto-attack
+            autoAttackActive.Value = true;
+            autoAttackIsRetaliation = false;
+        }
+
+        public void ExecuteMove(Vector2Int goal, int commandId)
+        {
             double now = NetworkManager.ServerTime.Time;
             currentTargetId.Value = 0; // a move order overrides an attack order
             recallActive = false;
+            autoAttackActive.Value = false;
             // the start is server calculated based on owner's command. the owner set off ~one-way latency earlier.
             // that gap comes back with the acknowledgement and the error smoothing closes it.
             Vector3 startPosition = PositionAtTime(serverTrip, now);
@@ -298,11 +357,17 @@ namespace TankIO
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
         void SubmitAttackCommandRpc(ulong targetObjectId, int commandId)
         {
+            ExecuteAttack(targetObjectId, commandId);
+        }
+
+        public void ExecuteAttack(ulong targetObjectId, int commandId)
+        {
             double now = NetworkManager.ServerTime.Time;
             IShellTarget target = ShellSystem.TargetFromObjectId(targetObjectId);
-            if (target == null || target.OwnerClientId == OwnerClientId || !target.Attackable)
+            if (target == null || target.CommanderId == CommanderId || !target.Attackable)
                 return; // already dead, own target, or an HQ mid-glide
             recallActive = false;
+            autoAttackActive.Value = false;
             currentTargetId.Value = targetObjectId;
             // always write a trip stamped with this click's id, so it clears the owner's prediction through the ack path
             // in range: move to the next tile centre, out of range: move to the firing tile.
@@ -324,6 +389,11 @@ namespace TankIO
             if (recallActive)
             {
                 UpdateRecall(now);
+                return;
+            }
+            if (autoAttackActive.Value)
+            {
+                UpdateAutoAttack(now);
                 return;
             }
             if (currentTargetId.Value == 0)
@@ -352,11 +422,55 @@ namespace TankIO
             TryFire(target.NetworkObjectId, targetPosition, now);
         }
 
+        // hold the current target while it stays in range, else take the nearest enemy tank in range.
+        void UpdateAutoAttack(double now)
+        {
+            Vector3 myPosition = PositionAtTime(serverTrip, now);
+            IShellTarget target = ShellSystem.TargetFromObjectId(currentTargetId.Value);
+            bool targetStillValid =
+                target != null
+                && target.Attackable
+                && (target.PositionAtTime(now) - myPosition).sqrMagnitude <= AttackRange * AttackRange;
+            if (!targetStillValid) // holding a valid target stops the turret flipping between two in-range enemies
+            {
+                target = NearestEnemyTankInRange(myPosition, now);
+                currentTargetId.Value = target != null ? target.NetworkObjectId : 0;
+            }
+            if (target != null)
+            {
+                autoAttackLastTargetTime = now;
+                TryFire(target.NetworkObjectId, target.PositionAtTime(now), now);
+            }
+            else if (autoAttackIsRetaliation && now - autoAttackLastTargetTime >= RetaliationSeconds)
+            {
+                autoAttackActive.Value = false; // nobody ordered this; with the range clear it disarms
+            }
+        }
+
+        // tanks only
+        IShellTarget NearestEnemyTankInRange(Vector3 myPosition, double now)
+        {
+            TankController nearest = null;
+            float nearestSquaredDistance = AttackRange * AttackRange;
+            foreach (TankController tank in SpawnedTanks)
+            {
+                if (tank.CommanderId == CommanderId)
+                    continue;
+                float squaredDistance = (tank.PositionAtTime(now) - myPosition).sqrMagnitude;
+                if (squaredDistance <= nearestSquaredDistance)
+                {
+                    nearest = tank;
+                    nearestSquaredDistance = squaredDistance;
+                }
+            }
+            return nearest;
+        }
+
         // recall's periodic check, chase-shaped: arrived beside the footprint > complete;
         // HQ relocated or the approach failed > repath toward its current home, writing only improvements.
         void UpdateRecall(double now)
         {
-            HqController hq = HqController.ForOwner(OwnerClientId);
+            HqController hq = HqController.ForCommander(CommanderId);
             if (hq == null)
             {
                 recallActive = false; // the home despawned mid-drive; the trip finishes as an ordinary move
@@ -506,7 +620,8 @@ namespace TankIO
                 muzzlePosition,
                 aimPoint,
                 now,
-                OwnerClientId,
+                CommanderId,
+                NetworkObjectId,
                 ShellSpeed,
                 ScaledDamage
             );
@@ -515,11 +630,25 @@ namespace TankIO
         }
 
         // a shell reached this tank. the shell system (server) decides contact; the tank applies the damage.
-        public void TakeShellHit(int shellId, float hitFraction, int damage, ulong attackerClientId)
+        public void TakeShellHit(
+            int shellId,
+            float hitFraction,
+            int damage,
+            ulong attackerCommanderId,
+            ulong attackerObjectId
+        )
         {
-            HqController homeHq = HqController.ForOwner(OwnerClientId);
+            HqController homeHq = HqController.ForCommander(CommanderId);
             if (homeHq != null)
-                homeHq.MarkAggressor(attackerClientId); // my home garrison remembers who shot me
+                homeHq.MarkAggressor(attackerCommanderId); // my home garrison remembers who shot me
+            // an idle tank answers fire: auto-attack flips on, aimed at the shooter. any standing order outranks it.
+            if (!recallActive && !autoAttackActive.Value && currentTargetId.Value == 0)
+            {
+                autoAttackActive.Value = true;
+                autoAttackIsRetaliation = true;
+                autoAttackLastTargetTime = NetworkManager.ServerTime.Time; // the disarm clock starts at the hit
+                currentTargetId.Value = attackerObjectId;
+            }
             ShellImpactRpc(shellId, hitFraction); // sent before the despawn below, or a killing blow could never announce itself
             health.Value -= damage;
             if (health.Value <= 0)
@@ -541,7 +670,7 @@ namespace TankIO
         {
             if (!debugFreeTank)
             {
-                HqController hq = HqController.ForOwner(OwnerClientId);
+                HqController hq = HqController.ForCommander(CommanderId);
                 if (hq != null)
                 {
                     double now = NetworkManager.ServerTime.Time;
@@ -560,8 +689,8 @@ namespace TankIO
         [Rpc(SendTo.ClientsAndHost)]
         void WreckRetreatRpc(Vector3 deathPosition, Vector3 homePosition, double startTime)
         {
-            // runs on the dying tank, so the owner id costs nothing to send; an HQ move finds this wreck by it
-            WreckVisual.Spawn(OwnerClientId, deathPosition, homePosition, startTime, WreckReturnSpeed);
+            // runs on the dying tank, so the commander id costs nothing to send; an HQ move finds this wreck by it
+            WreckVisual.Spawn(CommanderId, deathPosition, homePosition, startTime, WreckReturnSpeed);
         }
 
         // each machine flies its own local shell from its own drawn barrel tip.
@@ -778,9 +907,16 @@ namespace TankIO
         void RenderTurret()
         {
             Vector3 aimDirection = Vector3.zero;
-            // the owner aims at its own last command instead of waiting a round trip for currentTargetId; a dead
-            // predicted target resolves to null and the turret eases back, same as the replicated path.
-            IShellTarget target = ShellSystem.TargetFromObjectId(IsOwner ? predictedTargetId : currentTargetId.Value);
+            // the commanding player aims at their own last command instead of waiting a round trip for currentTargetId;
+            // a dead predicted target resolves to null and the turret eases back, same as the replicated path.
+            // under auto-attack there is no commanded target - the server picks them - so the owner follows
+            // currentTargetId like everyone else, ~half a round trip late. while a click is still in flight
+            // the owner's own belief about auto-attack wins over the not-yet-updated replicated flag.
+            // CommandedByLocalPlayer, not IsOwner: a host network-owns bot tanks but never predicts for them.
+            bool followServerAim = predictedTrip != null ? predictedAutoAttack : autoAttackActive.Value;
+            IShellTarget target = ShellSystem.TargetFromObjectId(
+                CommandedByLocalPlayer && !followServerAim ? predictedTargetId : currentTargetId.Value
+            );
             if (target != null)
                 aimDirection = target.DrawnPosition - transform.position;
             else if (forceFireArmed)

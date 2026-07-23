@@ -70,6 +70,28 @@ namespace TankIO
 
         private readonly NetworkVariable<int> hqHealth = new NetworkVariable<int>(MaxHqHealth);
 
+        // set by the spawner before Spawn, so it rides the spawn payload: OnNetworkSpawn already reads it.
+        // a human's client id, or a bot's assigned id; every tank this HQ deploys inherits it.
+        private readonly NetworkVariable<ulong> commanderId = new NetworkVariable<ulong>();
+
+        public ulong CommanderId
+        {
+            get { return commanderId.Value; }
+        }
+
+        // true only on the commanding player's own screen; other players' and every bot's read false
+        public bool CommandedByLocalPlayer
+        {
+            get { return commanderId.Value == NetworkManager.LocalClientId; }
+        }
+
+        // must run before Spawn: CommandedByLocalPlayer is read in OnNetworkSpawn, so the value has to
+        // arrive inside the spawn payload, not as a later delta
+        public void ServerSetCommanderBeforeSpawn(ulong id)
+        {
+            commanderId.Value = id;
+        }
+
         // the wreck's drive as the server tracks it. the full line is kept, not just ArriveTime, so an
         // HQ move mid-return can re-anchor the drive toward the new home from wherever the wreck is now.
         private struct PendingReturn
@@ -90,12 +112,12 @@ namespace TankIO
         // the server finds a dead tank's home HQ here to return its survivors
         public static readonly List<HqController> SpawnedHqs = new List<HqController>();
 
-        // the one lookup from a client to its HQ; null when that player has none (never spawned, or gone)
-        public static HqController ForOwner(ulong clientId)
+        // the one lookup from a commander to its HQ; null when that player or bot has none (never spawned, or gone)
+        public static HqController ForCommander(ulong commanderId)
         {
             foreach (HqController hq in SpawnedHqs)
             {
-                if (hq.OwnerClientId == clientId)
+                if (hq.CommanderId == commanderId)
                     return hq;
             }
             return null;
@@ -114,7 +136,7 @@ namespace TankIO
             renderers = GetComponentsInChildren<Renderer>();
             SpawnedHqs.Add(this);
             ShellSystem.Targets.Add(this);
-            if (IsOwner)
+            if (CommandedByLocalPlayer)
             {
                 LocalPlayerHq = this;
                 if (CameraController.Instance != null)
@@ -188,11 +210,16 @@ namespace TankIO
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
         void SubmitDeployRpc()
         {
+            ExecuteDeploy();
+        }
+
+        public void ExecuteDeploy()
+        {
             double now = NetworkManager.ServerTime.Time;
             if (!IsParked(now))
                 return;
             // a wreck still driving home holds its slot: the drive is the redeploy cooldown
-            if (DeployedTankCount(OwnerClientId) + returningTanks.Value >= MaxDeployedTanks)
+            if (DeployedTankCount(CommanderId) + returningTanks.Value >= MaxDeployedTanks)
                 return;
             int troopsToTake = Math.Min(TroopsPerTank, (int)HomeTroops(now));
             if (troopsToTake <= 0)
@@ -219,8 +246,11 @@ namespace TankIO
             Vector3 position = TileGrid.Instance.TileToWorldCenter(tile);
             position.y = tankPrefab.transform.position.y; // the trip is built from the root's height
             tank.transform.position = position;
+            TankController controller = tank.GetComponent<TankController>();
+            controller.ServerSetCommanderBeforeSpawn(CommanderId);
+            // network ownership follows the HQ's: a client for a human, the server for a bot
             tank.GetComponent<NetworkObject>().SpawnWithOwnership(OwnerClientId);
-            tank.GetComponent<TankController>().ServerInitializeTroops(troops, debugFree);
+            controller.ServerInitializeTroops(troops, debugFree);
         }
 
         // nearest unclaimed tile outside the footprint; the spiral skips the HQ's own parked tiles by itself
@@ -229,12 +259,12 @@ namespace TankIO
             return TripReservations.TryNearestUnclaimedParkTile(HomeTile, DeploySpawnSearchRadius, 0, out tile);
         }
 
-        static int DeployedTankCount(ulong ownerClientId)
+        static int DeployedTankCount(ulong commanderId)
         {
             int count = 0;
             foreach (TankController tank in TankController.SpawnedTanks)
             {
-                if (tank.OwnerClientId == ownerClientId)
+                if (tank.CommanderId == commanderId)
                     count++;
             }
             return count;
@@ -385,13 +415,19 @@ namespace TankIO
             return replicatedMoveState.Value.PositionAtTime(time);
         }
 
-        public void TakeShellHit(int shellId, float hitFraction, int damage, ulong attackerClientId)
+        public void TakeShellHit(
+            int shellId,
+            float hitFraction,
+            int damage,
+            ulong attackerCommanderId,
+            ulong attackerObjectId
+        )
         {
-            MarkAggressor(attackerClientId);
+            MarkAggressor(attackerCommanderId);
             ShellImpactRpc(shellId, hitFraction); // before a possible knockback state change, like the tank's ordering rule
             hqHealth.Value -= damage;
             if (hqHealth.Value <= 0)
-                Knockback(attackerClientId);
+                Knockback(attackerCommanderId);
         }
 
         [Rpc(SendTo.ClientsAndHost)]
@@ -403,7 +439,7 @@ namespace TankIO
         // destroyed: thrown back toward the edge, healed to half, and the killer plunders half the gold.
         // the relocation is a forced move through the ordinary move state,
         // so reservations, income pause and arrival restoration all come from machinery that already runs.
-        void Knockback(ulong attackerClientId)
+        void Knockback(ulong attackerCommanderId)
         {
             double now = NetworkManager.ServerTime.Time;
             hqHealth.Value = MaxHqHealth / 2; // respawns viable, not re-killable
@@ -411,7 +447,7 @@ namespace TankIO
             // plunder before the move so the stolen half is measured at the moment of the kill
             double stolen = Gold(now) * 0.5;
             Spend((float)stolen, now);
-            HqController killer = ForOwner(attackerClientId);
+            HqController killer = ForCommander(attackerCommanderId);
             if (killer != null)
                 killer.AddGold((float)stolen, now);
 

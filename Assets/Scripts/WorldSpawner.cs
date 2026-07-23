@@ -1,3 +1,4 @@
+using System.Reflection;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -15,6 +16,13 @@ namespace TankIO
 
         void Start()
         {
+            // every ServerSetCommanderBeforeSpawn write logs "doesn't know its NetworkBehaviour yet",
+            // which is harmless for us, the value ships in the spawn payload. NGO's own tests silence it with this internal flag; reflection because internal.
+            // if an NGO update renames the field the ?. skips quietly and the warnings come back.
+            typeof(NetworkVariableBase)
+                .GetField("IgnoreInitializeWarning", BindingFlags.Static | BindingFlags.NonPublic)
+                ?.SetValue(null, true);
+
             NetworkManager.Singleton.OnClientConnectedCallback += SpawnHqFor;
             NetworkManager.Singleton.OnServerStarted += SpawnWorld;
             NetworkManager.Singleton.OnClientStarted += WidenClockResetThreshold;
@@ -39,7 +47,8 @@ namespace TankIO
                 NetworkManager.Singleton.NetworkTimeSystem.HardResetThresholdSec = 1.0;
         }
 
-        // the capital (and later refineries): once per map, not per player.
+        // the capital (and later refineries): once per map, not per player. the bots come up here too,
+        // before anyone connects, spread from near the capital out to the rim.
         void SpawnWorld()
         {
             if (capitalPrefab == null)
@@ -51,31 +60,46 @@ namespace TankIO
             GameObject capital = Instantiate(capitalPrefab);
             capital.transform.position = TileGrid.Instance.TileToWorldCenter(center);
             capital.GetComponent<NetworkObject>().Spawn();
+
+            BotManager.Instance.SpawnBots(SpawnHq);
         }
 
         void SpawnHqFor(ulong clientId)
         {
-            if (!NetworkManager.Singleton.IsServer)
+            if (!NetworkManager.Singleton.IsServer) // we dont call IsServer directly because this is not networkbehaviour!
                 return; // the callback also runs on the connecting client, which owns nothing yet
+            SpawnHq(clientId, clientId, 1f); // a human commands through their own connection, and always starts on the rim
+        }
+
+        // commanderId is who this HQ fights for; ownerClientId is the connection allowed to send its RPCs.
+        // they are the same for a human. a bot's HQ is server-owned and driven by BotManager calling the
+        // Server* methods directly, so it needs no connection at all, hence the two ids.
+        // spawnDepth: 0 = beside the capital, 1 = the rim.
+        // bots spawn at varying depths so a joining player finds a world already in progress.
+        void SpawnHq(ulong commanderId, ulong ownerClientId, float spawnDepth)
+        {
             if (hqPrefab == null)
             {
                 Debug.LogError("Yet to provide HQ prefab will spawn");
                 return;
             }
             GameObject hq = Instantiate(hqPrefab);
-            hq.transform.position = TileGrid.Instance.TileToWorldCenter(HqSpawnTile());
-            hq.GetComponent<NetworkObject>().SpawnWithOwnership(clientId);
+            hq.transform.position = TileGrid.Instance.TileToWorldCenter(HqSpawnTile(spawnDepth));
+            hq.GetComponent<HqController>().ServerSetCommanderBeforeSpawn(commanderId);
+            hq.GetComponent<NetworkObject>().SpawnWithOwnership(ownerClientId);
         }
 
-        // every player starts on the rim, and pushes inward from there.
-        // each joined player will take the furthest rim spot from other players HD.
-        Vector2Int HqSpawnTile()
+        // the ring at the requested depth, then furthest from everyone else's HQ.
+        // a ring with no room falls inward to the next one.
+        Vector2Int HqSpawnTile(float spawnDepth)
         {
             TileGrid grid = TileGrid.Instance;
             Vector2 center = grid.CenterTileSpace;
             float rimRadius = grid.Radius - (HqController.FootprintRadius + 1); // the footprint fits inside the rim
+            float minRadius = HqController.FootprintRadius * 2 + 2; // innermost ring whose footprint clears the capital's
+            float startRadius = Mathf.Lerp(minRadius, rimRadius, spawnDepth);
 
-            for (float radius = rimRadius; radius >= 1f; radius -= 1f)
+            for (float radius = startRadius; radius >= 1f; radius -= 1f)
             {
                 Vector2Int best = default;
                 float bestDistanceSquared = -1f;
@@ -84,6 +108,8 @@ namespace TankIO
                 {
                     Vector2Int tile = TileAt(center, index * 2f * Mathf.PI / candidateCount, radius);
                     if (!HqController.IsFootprintFree(tile, 0))
+                        continue;
+                    if (!CapitalController.AllowsHqAt(tile)) // deep rings can reach the capital; rim ones never could
                         continue;
                     float distanceSquared = DistanceSquaredToNearestHq(tile);
                     if (distanceSquared > bestDistanceSquared)
@@ -95,7 +121,7 @@ namespace TankIO
                 if (bestDistanceSquared >= 0f)
                     return best;
             }
-            return TileAt(center, 0f, rimRadius); // disc is full: overlapping at the rim beats no HQ at all
+            return TileAt(center, 0f, startRadius); // disc is full: overlapping beats no HQ at all
         }
 
         static Vector2Int TileAt(Vector2 center, float angle, float radius)

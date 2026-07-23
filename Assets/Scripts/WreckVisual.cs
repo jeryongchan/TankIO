@@ -8,7 +8,7 @@ namespace TankIO
     // when the home HQ relocates mid-drive, both turn toward the new destination (see RetargetFor).
     public class WreckVisual : MonoBehaviour
     {
-        private ulong ownerClientId;
+        private ulong commanderId;
         private Vector3 startPosition; // the death point, until a mid-drive HQ move re-anchors the line
         private Vector3 homePosition;
         private double startTime;
@@ -23,7 +23,7 @@ namespace TankIO
             liveWrecks.Clear();
         }
 
-        public static void Spawn(ulong ownerClientId, Vector3 deathPosition, Vector3 homePosition, double startTime, float speed)
+        public static void Spawn(ulong commanderId, Vector3 deathPosition, Vector3 homePosition, double startTime, float speed)
         {
             GameObject wreckObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
             Destroy(wreckObject.GetComponent<Collider>()); // must not catch click raycasts
@@ -31,7 +31,7 @@ namespace TankIO
             wreckObject.transform.position = deathPosition;
             wreckObject.GetComponent<Renderer>().material.color = new Color(0.25f, 0.2f, 0.2f);
             WreckVisual wreck = wreckObject.AddComponent<WreckVisual>();
-            wreck.ownerClientId = ownerClientId;
+            wreck.commanderId = commanderId;
             wreck.startPosition = deathPosition;
             wreck.homePosition = homePosition;
             // a broadcast delayed past the start would be born mid-drive; play a late one from arrival instead
@@ -45,13 +45,13 @@ namespace TankIO
             liveWrecks.Remove(this);
         }
 
-        // this owner's HQ picked a new tile: drive on from wherever the wreck is now.
+        // this commander's HQ picked a new tile: drive on from wherever the wreck is now.
         // the server re-aims at its own clock, so its troop return can land a delivery delay off ours.
-        public static void RetargetFor(ulong ownerClientId, Vector3 newHomePosition)
+        public static void RetargetFor(ulong commanderId, Vector3 newHomePosition)
         {
             foreach (WreckVisual wreck in liveWrecks)
             {
-                if (wreck.ownerClientId != ownerClientId)
+                if (wreck.commanderId != commanderId)
                     continue;
                 wreck.startPosition = wreck.transform.position;
                 wreck.homePosition = new Vector3(newHomePosition.x, wreck.transform.position.y, newHomePosition.z);

@@ -54,7 +54,8 @@ namespace TankIO
             Vector3 muzzlePosition,
             Vector3 aimPoint,
             double fireTime,
-            ulong shooterClientId,
+            ulong shooterCommanderId,
+            ulong shooterObjectId,
             float speed,
             int damage
         )
@@ -67,7 +68,8 @@ namespace TankIO
                     muzzlePosition = muzzlePosition,
                     aimPoint = aimPoint,
                     fireTime = fireTime,
-                    shooterClientId = shooterClientId,
+                    shooterCommanderId = shooterCommanderId,
+                    shooterObjectId = shooterObjectId,
                     speed = speed,
                     damage = damage
                 }
@@ -96,7 +98,7 @@ namespace TankIO
                 float bestOverlap = 0f; // how far inside its radius the shell sits; deepest wins when several overlap
                 foreach (IShellTarget target in Targets)
                 {
-                    if (target.OwnerClientId == shell.shooterClientId)
+                    if (target.CommanderId == shell.shooterCommanderId)
                         continue; // friendly targets never block
                     if (!target.Attackable)
                         continue;
@@ -115,7 +117,13 @@ namespace TankIO
                     // fraction of the flight, not meters: each machine flies from its own drawn muzzle, so line lengths differ.
                     //  overlapping targets can make a zero-length flight, hence the guard.
                     float hitFraction = flightLength > 0f ? distanceTraveled / flightLength : 0f;
-                    hitTarget.TakeShellHit(shell.shellId, hitFraction, shell.damage, shell.shooterClientId);
+                    hitTarget.TakeShellHit(
+                        shell.shellId,
+                        hitFraction,
+                        shell.damage,
+                        shell.shooterCommanderId,
+                        shell.shooterObjectId
+                    );
                 }
                 else if (distanceTraveled >= flightLength)
                 {
@@ -131,7 +139,8 @@ namespace TankIO
             public Vector3 muzzlePosition;
             public Vector3 aimPoint;
             public double fireTime;
-            public ulong shooterClientId; // the shooter's own targets never block its shells
+            public ulong shooterCommanderId; // the shooter's own targets never block its shells
+            public ulong shooterObjectId; // so an idle victim can fire back at the shooter
             public float speed;
             public int damage;
         }

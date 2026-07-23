@@ -47,7 +47,7 @@ namespace TankIO
             ownedTanks.Clear();
             foreach (TankController tank in TankController.SpawnedTanks)
             {
-                if (tank.IsOwner)
+                if (tank.CommandedByLocalPlayer)
                     ownedTanks.Add(tank);
             }
             // spawn order = slot order, so a slot keeps its tank while others come and go

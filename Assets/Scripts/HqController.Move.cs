@@ -84,7 +84,7 @@ namespace TankIO
 
             // wrecks driving home to this HQ turn toward the new destination (covers knockback too,
             // which moves through the same state)
-            WreckVisual.RetargetFor(OwnerClientId, TileGrid.Instance.TileToWorldCenter(state.ToTile));
+            WreckVisual.RetargetFor(CommanderId, TileGrid.Instance.TileToWorldCenter(state.ToTile));
         }
 
         // the one one-shot moment of a move, replayed by every machine on its own clock
@@ -110,6 +110,11 @@ namespace TankIO
 
         [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
         void SubmitMoveRpc(Vector2Int targetTile)
+        {
+            ExecuteMove(targetTile);
+        }
+
+        public void ExecuteMove(Vector2Int targetTile)
         {
             double now = NetworkManager.ServerTime.Time;
             targetTile = CapitalController.SnapToDock(targetTile); // the client snapped for its preview; the server owns the decision

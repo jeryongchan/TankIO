@@ -134,7 +134,7 @@ namespace TankIO
             TankController clickedTank = TankUnderCursor(ray);
             if (clickedTank != null)
             {
-                if (clickedTank.IsOwner)
+                if (clickedTank.CommandedByLocalPlayer)
                 {
                     DeselectAll();
                     AddToSelection(clickedTank);
@@ -150,7 +150,7 @@ namespace TankIO
             HqController clickedHq = HqUnderCursor(ray);
             if (clickedHq != null)
             {
-                if (clickedHq.IsOwner)
+                if (clickedHq.CommandedByLocalPlayer)
                 {
                     // with tanks selected, clicking home is an order (recall); with nothing selected, a pick
                     if (selection.Count > 0)
@@ -180,12 +180,13 @@ namespace TankIO
                 selectedHq.RequestMove(CapitalController.SnapToDock(goal)); // hover already showed the cost; this click is the confirm
                 return;
             }
-            MoveSelectionTo(goal);
+            // alt+click ground: attack-move. alt+click on a tank or HQ already fell through to the plain attack above.
+            MoveSelectionTo(goal, keyboard != null && keyboard.altKey.isPressed);
         }
 
         // search outward from the clicked tile for one unclaimed parking spot per tank,
         // then hand each spot to its nearest tank so nobody crosses paths.
-        void MoveSelectionTo(Vector2Int clickedGoalTile)
+        void MoveSelectionTo(Vector2Int clickedGoalTile, bool attackMove)
         {
             // a selected tank's own park tile counts as free: it is about to vacate it
             List<ulong> selectionIds = new List<ulong>();
@@ -221,7 +222,10 @@ namespace TankIO
                         }
                     }
                 }
-                unassignedTanks[bestTankIndex].MoveTo(goalTiles[bestGoalIndex]);
+                if (attackMove)
+                    unassignedTanks[bestTankIndex].AttackMoveTo(goalTiles[bestGoalIndex]);
+                else
+                    unassignedTanks[bestTankIndex].MoveTo(goalTiles[bestGoalIndex]);
                 unassignedTanks.RemoveAt(bestTankIndex);
                 unassignedTankTiles.RemoveAt(bestTankIndex);
                 goalTiles.RemoveAt(bestGoalIndex);
@@ -235,7 +239,7 @@ namespace TankIO
             DeselectAll();
             foreach (TankController tank in TankController.SpawnedTanks)
             {
-                if (!tank.IsOwner)
+                if (!tank.CommandedByLocalPlayer)
                     continue;
                 Vector3 tankScreenPosition = mainCamera.WorldToScreenPoint(tank.transform.position);
                 if (box.Contains(new Vector2(tankScreenPosition.x, tankScreenPosition.y)))

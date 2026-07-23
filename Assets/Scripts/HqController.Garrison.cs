@@ -21,10 +21,10 @@ namespace TankIO
         private float garrisonDamageRemainder; // server only: fractional damage carried between checks
         private LineRenderer garrisonTracer; // debug local cosmetic, reads garrisonVictimId
 
-        // who has attacked this owner recently: time their tank shell last hit us.
+        // who has attacked this commander recently: time their tank shell last hit us.
         // only tank shells mark aggression, garrison fire never does, so an HQ defending itself is not considered aggressor. server only.
         private const double AggressionMemorySeconds = 60.0;
-        private readonly Dictionary<ulong, double> aggressionByClient = new Dictionary<ulong, double>();
+        private readonly Dictionary<ulong, double> aggressionByCommander = new Dictionary<ulong, double>();
 
         // garrison fire, undodgeable by design, concentrated on one victim at a time
         void UpdateGarrison(double now)
@@ -63,27 +63,27 @@ namespace TankIO
                 victim.TakeGarrisonDamage(wholeDamage);
         }
 
-        // a shell from attackerClientId's tank hit this owner's HQ or a tank: the garrison remembers.
+        // a shell from attackerCommanderId's tank hit this commander's HQ or a tank: the garrison remembers.
         // garrison damage never routes here, so defending cannot mark anyone. server only.
-        public void MarkAggressor(ulong attackerClientId)
+        public void MarkAggressor(ulong attackerCommanderId)
         {
-            if (attackerClientId == OwnerClientId)
+            if (attackerCommanderId == CommanderId)
                 return;
-            aggressionByClient[attackerClientId] = NetworkManager.ServerTime.Time;
+            aggressionByCommander[attackerCommanderId] = NetworkManager.ServerTime.Time;
         }
 
-        bool IsAggressor(ulong clientId, double now)
+        bool IsAggressor(ulong commanderId, double now)
         {
-            return aggressionByClient.TryGetValue(clientId, out double lastHitTime)
+            return aggressionByCommander.TryGetValue(commanderId, out double lastHitTime)
                 && now - lastHitTime <= AggressionMemorySeconds;
         }
 
-        // valid: alive, in range, and owned by a client whose tanks hit this owner within the memory window.
+        // valid: alive, in range, and commanded by someone whose tanks hit this commander within the memory window.
         bool IsValidGarrisonVictim(TankController tank, Vector3 center, double now)
         {
-            if (tank == null || tank.OwnerClientId == OwnerClientId)
+            if (tank == null || tank.CommanderId == CommanderId)
                 return false;
-            if (!IsAggressor(tank.OwnerClientId, now))
+            if (!IsAggressor(tank.CommanderId, now))
                 return false;
             Vector3 toTank = tank.PositionAtTime(now) - center;
             toTank.y = 0f;

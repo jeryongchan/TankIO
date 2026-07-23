@@ -14,13 +14,13 @@ namespace TankIO
         public struct HoldState : INetworkSerializable
         {
             public bool Held;
-            public ulong HolderClientId;
+            public ulong HolderCommanderId;
             public double HoldStartTime;
 
             public void NetworkSerialize<T>(BufferSerializer<T> serializer) where T : IReaderWriter
             {
                 serializer.SerializeValue(ref Held);
-                serializer.SerializeValue(ref HolderClientId);
+                serializer.SerializeValue(ref HolderCommanderId);
                 serializer.SerializeValue(ref HoldStartTime);
             }
         }
@@ -75,13 +75,13 @@ namespace TankIO
                     replicatedHoldState.Value = new HoldState { Held = false };
                 return;
             }
-            if (current.Held && current.HolderClientId == holder.OwnerClientId)
+            if (current.Held && current.HolderCommanderId == holder.CommanderId)
                 return; // same holder, keep the clock running
 
             replicatedHoldState.Value = new HoldState
             {
                 Held = true,
-                HolderClientId = holder.OwnerClientId,
+                HolderCommanderId = holder.CommanderId,
                 HoldStartTime = now
             };
         }
@@ -124,10 +124,10 @@ namespace TankIO
             return Mathf.Max(Mathf.Abs(a.x - b.x), Mathf.Abs(a.y - b.y));
         }
 
-        public bool IsHeldBy(ulong clientId)
+        public bool IsHeldBy(ulong commanderId)
         {
             HoldState state = replicatedHoldState.Value;
-            return state.Held && state.HolderClientId == clientId;
+            return state.Held && state.HolderCommanderId == commanderId;
         }
 
         public double HoldSeconds(double now)
