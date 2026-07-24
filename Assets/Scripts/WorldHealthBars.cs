@@ -5,7 +5,8 @@ using UnityEngine.UI;
 namespace TankIO
 {
     // one pooled overlay for every health bar floating over the world.
-    // every machine sees every HQ's bar.
+    // HQ bars are walked off the spawned details, so a machine draws them only for the bases it is
+    // watching; the far view keeps the HQs themselves either way.
     // a tank's bar is also its selection marker, RA2-style, so it draws only while that tank is selected
     public class WorldHealthBars : MonoBehaviour
     {
@@ -27,10 +28,13 @@ namespace TankIO
         {
             usedBars = 0;
             Camera mainCamera = Camera.main;
-            if (mainCamera != null)
+            if (mainCamera != null && CameraController.Lod == LodTier.Near)
             {
-                foreach (HqController hq in HqController.SpawnedHqs)
+                foreach (HqDetail hqDetail in HqDetail.Spawned)
                 {
+                    HqController hq = hqDetail.Hq;
+                    if (hq == null)
+                        continue; // the two despawns are separate messages: the HQ's can land a frame first
                     Place(
                         mainCamera,
                         hq.transform.position + Vector3.up * HqBarHeightAboveBase,

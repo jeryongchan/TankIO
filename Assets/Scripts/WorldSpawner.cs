@@ -14,6 +14,9 @@ namespace TankIO
         [SerializeField]
         private GameObject capitalPrefab;
 
+        [SerializeField]
+        private GameObject hqDetailPrefab;
+
         void Start()
         {
             // every ServerSetCommanderBeforeSpawn write logs "doesn't know its NetworkBehaviour yet",
@@ -85,8 +88,17 @@ namespace TankIO
             }
             GameObject hq = Instantiate(hqPrefab);
             hq.transform.position = TileGrid.Instance.TileToWorldCenter(HqSpawnTile(spawnDepth));
-            hq.GetComponent<HqController>().ServerSetCommanderBeforeSpawn(commanderId);
+            HqController controller = hq.GetComponent<HqController>();
+            controller.ServerSetCommanderBeforeSpawn(commanderId);
             hq.GetComponent<NetworkObject>().SpawnWithOwnership(ownerClientId);
+
+            // the regional half, spawned second so it can name the HQ it belongs to. left server-owned:
+            // it carries no RPCs, and NGO refuses to hide an object from its own owner.
+            GameObject hqDetail = Instantiate(hqDetailPrefab);
+            hqDetail.GetComponent<HqDetail>().ServerSetHqBeforeSpawn(controller.NetworkObjectId);
+            NetworkObject hqDetailObject = hqDetail.GetComponent<NetworkObject>();
+            hqDetailObject.CheckObjectVisibility = clientId => InterestManager.HqDetailVisibleTo(controller, clientId); // same concept as tankObject.CheckObjectVisibility
+            hqDetailObject.Spawn();
         }
 
         // the ring at the requested depth, then furthest from everyone else's HQ.
@@ -121,6 +133,7 @@ namespace TankIO
                 if (bestDistanceSquared >= 0f)
                     return best;
             }
+            Debug.LogWarning($"no free footprint on any ring for HQ at depth {spawnDepth:F2}, overlapping");
             return TileAt(center, 0f, startRadius); // disc is full: overlapping beats no HQ at all
         }
 

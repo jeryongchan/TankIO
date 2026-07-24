@@ -10,8 +10,21 @@ namespace TankIO
     // a miss is not an event at all.
     public class ShellVisual : MonoBehaviour
     {
+        [SerializeField]
+        private GameObject hitMarker; // the server confirmed this shell hit; a shell owns the marks it leaves
+
+        [SerializeField]
+        private GameObject landingMarker; // the shell reached its aim point, no verdict implied
+
         private static readonly Dictionary<int, ShellVisual> visualsByShellId = new Dictionary<int, ShellVisual>();
 
+        // a hit event can outlive the shell it belongs to, and then there is no instance to read the prefab
+        // from. stays null until some shell has spawned here: interest management can hide a shooter, whose
+        // fire event then never arrives while the victim's impact event still does.
+        private static GameObject lastHitMarker;
+
+        private Renderer[] renderers;
+        private bool visible = true;
         private int shellId;
         private Vector3 muzzlePosition;
         private Vector3 aimPoint;
@@ -22,6 +35,7 @@ namespace TankIO
         private Component serverHitTarget; // tank or HQ; only its drawn transform is read
 
         public static void Spawn(
+            GameObject prefab,
             int shellId,
             Vector3 muzzlePosition,
             Vector3 aimPoint,
@@ -30,12 +44,10 @@ namespace TankIO
             float hitRadius
         )
         {
-            GameObject shellObject = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            Destroy(shellObject.GetComponent<Collider>()); // must not catch the attack click raycast
-            shellObject.transform.localScale = Vector3.one * 0.3f;
-            shellObject.transform.position = muzzlePosition;
+            GameObject shellObject = Instantiate(prefab, muzzlePosition, Quaternion.identity);
             aimPoint.y = muzzlePosition.y; // the server aims level at y=0; fly the visual level at barrel height instead of diving into the target's base
-            ShellVisual shell = shellObject.AddComponent<ShellVisual>();
+            ShellVisual shell = shellObject.GetComponent<ShellVisual>();
+            shell.renderers = shellObject.GetComponentsInChildren<Renderer>();
             shell.shellId = shellId;
             shell.muzzlePosition = muzzlePosition;
             shell.aimPoint = aimPoint;
@@ -44,6 +56,7 @@ namespace TankIO
             shell.fireTime = System.Math.Max(fireTime, NetworkManager.Singleton.ServerTime.Time);
             shell.speed = speed;
             shell.hitRadius = hitRadius;
+            lastHitMarker = shell.hitMarker;
             visualsByShellId[shellId] = shell;
         }
 
@@ -57,10 +70,10 @@ namespace TankIO
                 shell.serverHitFraction = Mathf.Min(hitFraction, 1f); // clamped so a known hit always resolves before the generic landing
                 shell.serverHitTarget = hitTarget;
             }
-            else
+            else if (lastHitMarker != null)
             {
                 // the shell already landed and took its position with it, so this marks the target, not the contact point
-                SpawnDebugMarker(hitTarget.transform.position + Vector3.up * 0.8f, Color.green);
+                SpawnMarker(lastHitMarker, hitTarget.transform.position + Vector3.up * 0.8f);
             }
         }
 
@@ -71,6 +84,20 @@ namespace TankIO
 
         void Update()
         {
+            if (NetworkManager.Singleton == null)
+            {
+                Destroy(gameObject); // the session driving this shell's clock is gone
+                return;
+            }
+            // the flight still runs at every tier so a mid-flight zoom-in finds the shell where it should be; only the drawing is gated
+            bool near = CameraController.Lod == LodTier.Near;
+            if (visible != near)
+            {
+                visible = near;
+                foreach (Renderer shellRenderer in renderers)
+                    shellRenderer.enabled = near;
+            }
+
             float flightLength = (aimPoint - muzzlePosition).magnitude;
             // the local clock can read slightly before fireTime when the broadcast arrives early, hence the clamp
             float distanceTraveled =
@@ -86,7 +113,7 @@ namespace TankIO
                 else
                 {
                     // the hit despawned the target (a killing blow), so there is no body to ride; mark where the shell is
-                    SpawnDebugMarker(transform.position, Color.green);
+                    SpawnMarker(hitMarker, transform.position);
                     Destroy(gameObject);
                 }
                 return;
@@ -94,7 +121,7 @@ namespace TankIO
 
             if (distanceTraveled >= flightLength)
             {
-                SpawnDebugMarker(aimPoint, Color.red); // the generic landing: the shell ended here, no verdict implied
+                SpawnMarker(landingMarker, aimPoint);
                 Destroy(gameObject);
             }
         }
@@ -104,20 +131,15 @@ namespace TankIO
         void MarkHitOn(Component target)
         {
             Vector3 contactOffset = (transform.position - target.transform.position).normalized * hitRadius;
-            SpawnDebugMarker(target.transform.position + contactOffset, Color.green);
+            SpawnMarker(hitMarker, target.transform.position + contactOffset);
             Destroy(gameObject);
         }
 
-        // debug stand-ins for the two effect classes: green = the server-confirmed tank hit, red = the generic landing
-        static GameObject SpawnDebugMarker(Vector3 position, Color color)
+        static void SpawnMarker(GameObject prefab, Vector3 position)
         {
-            GameObject marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            Destroy(marker.GetComponent<Collider>());
-            marker.transform.localScale = Vector3.one * 0.2f;
-            marker.transform.position = position;
-            marker.GetComponent<Renderer>().material.color = color;
-            Destroy(marker, 1f);
-            return marker;
+            if (CameraController.Lod != LodTier.Near)
+                return; // sub-tile flashes, invisible from higher up
+            Destroy(Instantiate(prefab, position, Quaternion.identity), 1f);
         }
     }
 }

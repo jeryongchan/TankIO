@@ -23,13 +23,9 @@ namespace TankIO
 
         public static PlayerCommander Instance { get; private set; } // the tank strip routes slot clicks here
 
-        // nothing here is authored, so it creates itself rather than needing a scene object someone can forget
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        static void Create()
+        void Awake()
         {
-            GameObject commanderObject = new GameObject(nameof(PlayerCommander));
-            DontDestroyOnLoad(commanderObject);
-            Instance = commanderObject.AddComponent<PlayerCommander>();
+            Instance = this;
         }
 
         void Start()

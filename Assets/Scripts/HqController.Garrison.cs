@@ -13,13 +13,12 @@ namespace TankIO
         private const float GarrisonDamagePerTroopPerSecond = 0.02f; // full 1000-troop HQ = 20 dps, about four full tanks
         private const double GarrisonCheckInterval = 0.3;
 
-        // who the garrison is shooting, 0 = nobody. replicated only so every machine can draw the tracer;
-        // the damage itself is server arithmetic on the existing health path.
-        private readonly NetworkVariable<ulong> garrisonVictimId = new NetworkVariable<ulong>();
-
         private double garrisonCheckTimer; // server only
         private float garrisonDamageRemainder; // server only: fractional damage carried between checks
         private LineRenderer garrisonTracer; // debug local cosmetic, reads garrisonVictimId
+
+        [SerializeField]
+        private Material garrisonTracerMaterial; // the line is built in code, so this is all the look it has
 
         // who has attacked this commander recently: time their tank shell last hit us.
         // only tank shells mark aggression, garrison fire never does, so an HQ defending itself is not considered aggressor. server only.
@@ -35,16 +34,16 @@ namespace TankIO
 
             if (!Attackable) // mid-move: cannot defend either
             {
-                garrisonVictimId.Value = 0;
+                Detail.GarrisonVictimId = 0;
                 return;
             }
 
             Vector3 center = TileGrid.Instance.TileToWorldCenter(HomeTile);
-            TankController victim = TankController.TankFromObjectId(garrisonVictimId.Value);
+            TankController victim = TankController.TankFromObjectId(Detail.GarrisonVictimId);
             if (!IsValidGarrisonVictim(victim, center, now))
             {
                 victim = NearestGarrisonVictim(center, now);
-                garrisonVictimId.Value = victim != null ? victim.NetworkObjectId : 0;
+                Detail.GarrisonVictimId = victim != null ? victim.NetworkObjectId : 0;
             }
             if (victim == null)
             {
@@ -112,7 +111,10 @@ namespace TankIO
         // debug placeholder for the real bullet tracer volley.
         void RenderGarrisonTracer()
         {
-            IShellTarget victim = ShellSystem.TargetFromObjectId(garrisonVictimId.Value);
+            IShellTarget victim = null;
+            // no detail means this client is not watching the area, so there is no tracer to draw
+            if (Detail != null)
+                victim = ShellSystem.TargetFromObjectId(Detail.GarrisonVictimId);
             if (victim == null)
             {
                 if (garrisonTracer != null)
@@ -124,8 +126,7 @@ namespace TankIO
                 GameObject tracerObject = new GameObject("GarrisonTracer");
                 tracerObject.transform.SetParent(transform, false);
                 garrisonTracer = tracerObject.AddComponent<LineRenderer>();
-                garrisonTracer.material = new Material(Shader.Find("Sprites/Default"));
-                garrisonTracer.startColor = garrisonTracer.endColor = new Color(1f, 0.85f, 0.2f);
+                garrisonTracer.sharedMaterial = garrisonTracerMaterial; // the material carries the colour; an unlit shader ignores LineRenderer's vertex colours
                 garrisonTracer.startWidth = garrisonTracer.endWidth = 0.08f;
                 garrisonTracer.positionCount = 2;
             }

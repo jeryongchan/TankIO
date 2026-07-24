@@ -69,6 +69,18 @@ namespace TankIO
         private Renderer[] renderers;
         private bool visible = true;
 
+        [SerializeField]
+        private Material ownIconMaterial; // the Mid square and Far dot, colored by who commands the HQ
+
+        [SerializeField]
+        private Material enemyIconMaterial;
+
+        [SerializeField]
+        private MeshRenderer midIcon; // the flat square standing in for the base at Mid
+
+        [SerializeField]
+        private MeshRenderer farIcon; // the dot it shrinks to at Far
+
         private static readonly List<Vector2Int> footprintBuffer = new List<Vector2Int>();
         private static readonly List<ulong> tanksToRepath = new List<ulong>();
 
@@ -162,8 +174,14 @@ namespace TankIO
             bool inTransit = state.InTransitAt(now);
             transform.position = state.PositionAtTime(now);
             transform.localScale = authoredScale * (inTransit ? TransitScale : 1f);
-            SetVisible(!IsDockedAtCapital(now));
-            RenderGarrisonTracer();
+            bool docked = IsDockedAtCapital(now);
+            LodTier lod = CameraController.Lod;
+            SetVisible(!docked && lod == LodTier.Near);
+            midIcon.enabled = !docked && lod == LodTier.Mid;
+            farIcon.enabled = !docked && lod == LodTier.Far;
+#if !UNITY_SERVER
+            RenderGarrisonTracer(); // purely visual: spare the dedicated server the tracer objects
+#endif
         }
 
         // packed HQ vanish into capital and dock there.

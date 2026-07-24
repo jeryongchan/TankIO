@@ -23,7 +23,7 @@ namespace TankIO
         private const float TroopRegenPerSecond = 3f; // recovery pacing: a dead tank's ~125 lost troops come back in ~40s
         private const int DeploySpawnSearchRadius = 4; // rings around the HQ searched for a free spawn tile
 
-        private const int MaxHqHealth = 500;
+        public const int MaxHqHealth = 500;
         private const float HqHitRadius = 1.5f; // half the 3-tile footprint width; the corners it undercuts are imperceptible
 
         private const int KnockbackTiles = 4; // rings toward the edge a destroyed HQ is thrown
@@ -68,7 +68,9 @@ namespace TankIO
 
         private readonly NetworkVariable<int> returningTanks = new NetworkVariable<int>();
 
-        private readonly NetworkVariable<int> hqHealth = new NetworkVariable<int>(MaxHqHealth);
+        // health and garrison state, on their own NetworkObject so they can be hidden per client.
+        // null on a client that is not watching this area; the server always holds it.
+        public HqDetail Detail { get; set; }
 
         // set by the spawner before Spawn, so it rides the spawn payload: OnNetworkSpawn already reads it.
         // a human's client id, or a bot's assigned id; every tank this HQ deploys inherits it.
@@ -133,7 +135,13 @@ namespace TankIO
         {
             replicatedMoveState.OnValueChanged += OnMoveStateChanged;
             authoredScale = transform.localScale;
+            // the icons are children, so they land in here too; Render writes them after SetVisible and wins
             renderers = GetComponentsInChildren<Renderer>();
+#if !UNITY_SERVER
+            Material iconMaterial = CommandedByLocalPlayer ? ownIconMaterial : enemyIconMaterial;
+            midIcon.sharedMaterial = iconMaterial;
+            farIcon.sharedMaterial = iconMaterial;
+#endif
             SpawnedHqs.Add(this);
             ShellSystem.Targets.Add(this);
             if (CommandedByLocalPlayer)
@@ -178,6 +186,10 @@ namespace TankIO
         public override void OnNetworkDespawn()
         {
             TripReservations.Release(NetworkObjectId);
+            // the detail is a separate object, so nothing despawns it for us. null on a shutdown, where
+            // NGO tears every object down in its own order and may have reached the detail first.
+            if (IsServer && Detail != null)
+                Detail.NetworkObject.Despawn();
             replicatedMoveState.OnValueChanged -= OnMoveStateChanged;
             SpawnedHqs.Remove(this);
             ShellSystem.Targets.Remove(this);
@@ -198,7 +210,9 @@ namespace TankIO
                 ReturnArrivedWrecks(now);
                 UpdateGarrison(now);
             }
-            Render(state, now);
+#if !UNITY_SERVER
+            Render(state, now); // same as the tank: server logic reads the move state, never the transform
+#endif
         }
 
         // owner input path, called by the tank strip
@@ -248,8 +262,9 @@ namespace TankIO
             tank.transform.position = position;
             TankController controller = tank.GetComponent<TankController>();
             controller.ServerSetCommanderBeforeSpawn(CommanderId);
-            // network ownership follows the HQ's: a client for a human, the server for a bot
-            tank.GetComponent<NetworkObject>().SpawnWithOwnership(OwnerClientId);
+            NetworkObject tankObject = tank.GetComponent<NetworkObject>();
+            tankObject.CheckObjectVisibility = clientId => InterestManager.TankVisibleTo(controller, clientId); // give NGO a rule for tank visibility; must be set before Spawn, which is when NGO reads it
+            tankObject.SpawnWithOwnership(OwnerClientId); // network ownership follows the HQ's: a client for a human, the server for a bot
             controller.ServerInitializeTroops(troops, debugFree);
         }
 
@@ -425,8 +440,8 @@ namespace TankIO
         {
             MarkAggressor(attackerCommanderId);
             ShellImpactRpc(shellId, hitFraction); // before a possible knockback state change, like the tank's ordering rule
-            hqHealth.Value -= damage;
-            if (hqHealth.Value <= 0)
+            Detail.Health -= damage;
+            if (Detail.Health <= 0)
                 Knockback(attackerCommanderId);
         }
 
@@ -442,7 +457,7 @@ namespace TankIO
         void Knockback(ulong attackerCommanderId)
         {
             double now = NetworkManager.ServerTime.Time;
-            hqHealth.Value = MaxHqHealth / 2; // respawns viable, not re-killable
+            Detail.Health = MaxHqHealth / 2; // respawns viable, not re-killable
 
             // plunder before the move so the stolen half is measured at the moment of the kill
             double stolen = Gold(now) * 0.5;
@@ -565,10 +580,11 @@ namespace TankIO
             return Mathf.Lerp(EdgeGoldRate, CenterGoldRate, TileGrid.Instance.RingDepth01(tile));
         }
 
-        // read-only surfaces for the HUD (ResourceHud, WorldHealthBars); every write stays in this class
+        // read-only surfaces for the HUD (ResourceHud, WorldHealthBars); every write stays in this class.
+        // WorldHealthBars walks the spawned details, so it only asks this of an HQ whose detail it holds.
         public float HealthFraction
         {
-            get { return Mathf.Clamp01((float)hqHealth.Value / MaxHqHealth); }
+            get { return Mathf.Clamp01((float)Detail.Health / MaxHqHealth); }
         }
 
         public float GoldRatePerSecond

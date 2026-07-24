@@ -8,6 +8,8 @@ namespace TankIO
     // when the home HQ relocates mid-drive, both turn toward the new destination (see RetargetFor).
     public class WreckVisual : MonoBehaviour
     {
+        private Renderer[] renderers;
+        private bool visible = true;
         private ulong commanderId;
         private Vector3 startPosition; // the death point, until a mid-drive HQ move re-anchors the line
         private Vector3 homePosition;
@@ -23,14 +25,18 @@ namespace TankIO
             liveWrecks.Clear();
         }
 
-        public static void Spawn(ulong commanderId, Vector3 deathPosition, Vector3 homePosition, double startTime, float speed)
+        public static void Spawn(
+            GameObject prefab,
+            ulong commanderId,
+            Vector3 deathPosition,
+            Vector3 homePosition,
+            double startTime,
+            float speed
+        )
         {
-            GameObject wreckObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            Destroy(wreckObject.GetComponent<Collider>()); // must not catch click raycasts
-            wreckObject.transform.localScale = new Vector3(0.6f, 0.25f, 0.8f); // squashed: a hull, not a fighting tank
-            wreckObject.transform.position = deathPosition;
-            wreckObject.GetComponent<Renderer>().material.color = new Color(0.25f, 0.2f, 0.2f);
-            WreckVisual wreck = wreckObject.AddComponent<WreckVisual>();
+            GameObject wreckObject = Instantiate(prefab, deathPosition, Quaternion.identity);
+            WreckVisual wreck = wreckObject.GetComponent<WreckVisual>();
+            wreck.renderers = wreckObject.GetComponentsInChildren<Renderer>();
             wreck.commanderId = commanderId;
             wreck.startPosition = deathPosition;
             wreck.homePosition = homePosition;
@@ -61,6 +67,20 @@ namespace TankIO
 
         void Update()
         {
+            if (NetworkManager.Singleton == null)
+            {
+                Destroy(gameObject); // the session driving this wreck's clock is gone
+                return;
+            }
+            // the drive still runs at every tier so a mid-drive zoom-in finds the wreck where it should be; only the drawing is gated
+            bool near = CameraController.Lod == LodTier.Near;
+            if (visible != near)
+            {
+                visible = near;
+                foreach (Renderer wreckRenderer in renderers)
+                    wreckRenderer.enabled = near;
+            }
+
             float distanceDriven =
                 speed * Mathf.Max(0f, (float)(NetworkManager.Singleton.ServerTime.Time - startTime));
             transform.position = Vector3.MoveTowards(startPosition, homePosition, distanceDriven);

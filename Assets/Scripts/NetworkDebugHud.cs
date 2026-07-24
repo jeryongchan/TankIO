@@ -1,4 +1,5 @@
 using Unity.Netcode;
+using Unity.Netcode.Transports.UTP;
 using UnityEngine;
 
 namespace TankIO
@@ -7,6 +8,9 @@ namespace TankIO
     // holds no tank); Host is the same thing fused with a local client, which is quicker to test with.
     public class NetworkDebugHud : MonoBehaviour
     {
+        string address = "127.0.0.1";
+        string port = "7777";
+
         void OnGUI()
         {
             NetworkManager networkManager = NetworkManager.Singleton;
@@ -29,8 +33,16 @@ namespace TankIO
                     networkManager.StartHost();
                 if (GUILayout.Button("server"))
                     networkManager.StartServer();
-                if (GUILayout.Button("client"))
+                GUILayout.BeginHorizontal();
+                address = GUILayout.TextField(address);
+                port = GUILayout.TextField(port, GUILayout.Width(50f));
+                GUILayout.EndHorizontal();
+                if (GUILayout.Button("client") && ushort.TryParse(port, out ushort parsedPort))
+                {
+                    // the transport asset stays on localhost; the target server is set here per session
+                    networkManager.GetComponent<UnityTransport>().SetConnectionData(address, parsedPort);
                     networkManager.StartClient();
+                }
             }
 
             GUILayout.EndArea();

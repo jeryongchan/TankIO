@@ -23,15 +23,12 @@ namespace TankIO
         }
 
         private readonly List<Shell> liveShells = new List<Shell>();
+        private readonly List<Vector3> targetPositions = new List<Vector3>(); // per-frame cache, same order as Targets
         private int lastShellId;
 
-        // nothing here is authored, so it creates itself rather than needing a scene object someone can forget
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        static void Create()
+        void Awake()
         {
-            GameObject systemObject = new GameObject(nameof(ShellSystem));
-            DontDestroyOnLoad(systemObject);
-            Instance = systemObject.AddComponent<ShellSystem>();
+            Instance = this;
         }
 
         // the registered target behind a NetworkObject id, null when despawned or not a target
@@ -87,8 +84,18 @@ namespace TankIO
                 return; // runs on every machine, but only the server owns shells
 
             double now = NetworkManager.Singleton.ServerTime.Time;
+            targetPositions.Clear(); // last frame's positions
             for (int index = liveShells.Count - 1; index >= 0; index--)
             {
+                // a target's position is the same for every shell this frame, so evaluate each trip once.
+                // recached when the count moves: a hit can despawn a target mid-frame, shifting the list
+                if (targetPositions.Count != Targets.Count)
+                {
+                    targetPositions.Clear();
+                    foreach (IShellTarget target in Targets)
+                        targetPositions.Add(target.PositionAtTime(now));
+                }
+
                 Shell shell = liveShells[index];
                 float flightLength = (shell.aimPoint - shell.muzzlePosition).magnitude;
                 float distanceTraveled = shell.speed * (float)(now - shell.fireTime);
@@ -96,14 +103,17 @@ namespace TankIO
 
                 IShellTarget hitTarget = null;
                 float bestOverlap = 0f; // how far inside its radius the shell sits; deepest wins when several overlap
-                foreach (IShellTarget target in Targets)
+                for (int targetIndex = 0; targetIndex < Targets.Count; targetIndex++)
                 {
+                    IShellTarget target = Targets[targetIndex];
                     if (target.CommanderId == shell.shooterCommanderId)
                         continue; // friendly targets never block
                     if (!target.Attackable)
                         continue;
-                    float distance = (shellPosition - target.PositionAtTime(now)).magnitude;
-                    float overlap = target.HitRadius - distance;
+                    float sqrDistance = (shellPosition - targetPositions[targetIndex]).sqrMagnitude;
+                    if (sqrDistance >= target.HitRadius * target.HitRadius)
+                        continue; // squared compare keeps the sqrt for actual contacts only
+                    float overlap = target.HitRadius - Mathf.Sqrt(sqrDistance);
                     if (overlap > bestOverlap)
                     {
                         hitTarget = target;

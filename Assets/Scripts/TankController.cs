@@ -31,6 +31,24 @@ namespace TankIO
         [SerializeField]
         private float turretTurnSpeed = 180f; // degrees per second toward the target; fire snaps the rest of the way
 
+        [SerializeField]
+        private GameObject shellPrefab; // local visuals, spawned per machine; neither is a NetworkObject
+
+        [SerializeField]
+        private GameObject wreckPrefab;
+
+        [SerializeField]
+        private Material ownIconMaterial; // the Mid-tier diamond, colored by who commands the tank
+
+        [SerializeField]
+        private Material enemyIconMaterial;
+
+        [SerializeField]
+        private MeshRenderer midIcon; // the flat quad standing in for the hull at Mid
+
+        private Renderer[] renderers;
+        private bool visible = true;
+
         private const float PositionErrorSnapDistance = 5f; // a position error this wide is snapped instead of closed in
         private const float AttackRange = 8f;
         private const float IdealFiringDistance = AttackRange * 0.85f; // a chase halts this deep inside range, so the target's jitter can't restart it
@@ -69,7 +87,7 @@ namespace TankIO
             get { return commanderId.Value == NetworkManager.LocalClientId; }
         }
 
-        public const float WreckReturnSpeed = 1.5f; // slower than driving: an injured hull limping home. HqController re-runs the same arithmetic when a move re-anchors pending returns.
+        public const float WreckReturnSpeed = 3f; // currently const cuz hq needs to read it from tankcontroller to redirect wreck...
         private bool recallActive; // server only: a standing order home, despawn-and-return on arrival
 
         // fire at whatever comes in range, never touching the trip. set by an attack-move click, or by
@@ -96,15 +114,24 @@ namespace TankIO
 
         private static readonly List<ulong> tanksToRepath = new List<ulong>(); // reused by every server trip write
 
+        // every tank's position at the current server frame, parallel to SpawnedTanks. server time is fixed
+        // within a frame, so the auto-attack scan evaluates each trip once instead of once per scanning tank
+        private static readonly List<Vector3> frameTankPositions = new List<Vector3>();
+        private static double frameTankPositionsTime = double.NaN;
+
         // statics outlive a play session when domain reload is off, so tanks from one session would leak into
         // the next. runs before the scene loads on every entry to play mode.
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void ResetSessionState()
         {
             SpawnedTanks.Clear();
+            frameTankPositions.Clear();
+            frameTankPositionsTime = double.NaN;
+            pathfinder = null; // its arrays are sized to the previous session's grid
         }
 
-        private Pathfinder pathfinder;
+        // previously wasnt static so on a big map of 1000x1000, each tank having a separate pathfinder cause huge lag at start due to 26,596 MB. After making it static, its 2,433 MB.
+        private static Pathfinder pathfinder;
         private readonly List<Vector2Int> pathBuffer = new List<Vector2Int>();
 
         private Trip serverTrip; // the replicated trip state, evaluatable
@@ -118,12 +145,17 @@ namespace TankIO
 
         public override void OnNetworkSpawn()
         {
-            if (IsServer || IsOwner)
+            if ((IsServer || IsOwner) && pathfinder == null)
                 pathfinder = new Pathfinder(TileGrid.Instance); // only the server routes commands, only the owner predicts
             replicatedTripState.OnValueChanged += OnTripStateChanged;
             SpawnedTanks.Add(this);
             ShellSystem.Targets.Add(this);
             turretWorldRotation = turret.rotation;
+#if !UNITY_SERVER
+            // the icon is a child, so it lands in here too; Render writes it after SetVisible and wins
+            renderers = GetComponentsInChildren<Renderer>();
+            midIcon.sharedMaterial = CommandedByLocalPlayer ? ownIconMaterial : enemyIconMaterial;
+#endif
 
             if (IsServer)
             {
@@ -156,11 +188,18 @@ namespace TankIO
                 return; // not spawned yet
             if (IsServer)
             {
+#if UNITY_SERVER
+                ServerAimTurret(NetworkManager.ServerTime.Time); // Render is compiled out of this build; the fire gate still needs the pivot aimed
+#endif
                 UpdateTargeting();
                 if (forceFireArmed && TryFire(0, forceFireAim, NetworkManager.ServerTime.Time))
                     forceFireArmed = false; // one shot per force-fire click, then the turret rests
             }
+#if !UNITY_SERVER
+            // gameplay reads PositionAtTime, never the transform.
+            //  skipping this on dedicated server else PhysX would re-register every frame for nobody to query
             Render();
+#endif
         }
 
         // the owner's half of every plain drive order (move, attack-move, recall): path the click locally
@@ -447,16 +486,29 @@ namespace TankIO
             }
         }
 
+        // rebuilds frameTankPositions once per server frame; later scans this frame reuse it
+        static void CacheTankPositions(double now)
+        {
+            if (frameTankPositionsTime == now && frameTankPositions.Count == SpawnedTanks.Count)
+                return;
+            frameTankPositions.Clear();
+            for (int index = 0; index < SpawnedTanks.Count; index++)
+                frameTankPositions.Add(SpawnedTanks[index].PositionAtTime(now));
+            frameTankPositionsTime = now;
+        }
+
         // tanks only
         IShellTarget NearestEnemyTankInRange(Vector3 myPosition, double now)
         {
+            CacheTankPositions(now);
             TankController nearest = null;
             float nearestSquaredDistance = AttackRange * AttackRange;
-            foreach (TankController tank in SpawnedTanks)
+            for (int index = 0; index < SpawnedTanks.Count; index++)
             {
+                TankController tank = SpawnedTanks[index];
                 if (tank.CommanderId == CommanderId)
                     continue;
-                float squaredDistance = (tank.PositionAtTime(now) - myPosition).sqrMagnitude;
+                float squaredDistance = (frameTankPositions[index] - myPosition).sqrMagnitude;
                 if (squaredDistance <= nearestSquaredDistance)
                 {
                     nearest = tank;
@@ -690,7 +742,7 @@ namespace TankIO
         void WreckRetreatRpc(Vector3 deathPosition, Vector3 homePosition, double startTime)
         {
             // runs on the dying tank, so the commander id costs nothing to send; an HQ move finds this wreck by it
-            WreckVisual.Spawn(CommanderId, deathPosition, homePosition, startTime, WreckReturnSpeed);
+            WreckVisual.Spawn(wreckPrefab, CommanderId, deathPosition, homePosition, startTime, WreckReturnSpeed);
         }
 
         // each machine flies its own local shell from its own drawn barrel tip.
@@ -711,7 +763,7 @@ namespace TankIO
                 turret.rotation = Quaternion.LookRotation(aimDirection);
                 turretWorldRotation = turret.rotation; // or RenderTurret would restore the pre-snap cache and undo the snap
             }
-            ShellVisual.Spawn(shellId, muzzle.position, aimPoint, fireTime, ShellSpeed, TankHitRadius);
+            ShellVisual.Spawn(shellPrefab, shellId, muzzle.position, aimPoint, fireTime, ShellSpeed, TankHitRadius);
         }
 
         // a shell reached a tank before its aim point. the fraction says when along the flight, so an event arriving
@@ -836,10 +888,12 @@ namespace TankIO
             return trip;
         }
 
-        // the tank's gameplay position: the replicated trip evaluated at a time. never transform.position, which
-        // carries the cosmetic error offset. this is what anything outside the tank should read.
+        // the tank's gameplay position: the replicated trip evaluated at a time. never transform.position, which carries the cosmetic error offset.
+        // this is what anything outside the tank should read.
         public Vector3 PositionAtTime(double time)
         {
+            if (serverTrip == null)
+                return transform.position; // NGO asks CheckObjectVisibility before OnNetworkSpawn writes the trip; the spawner already placed us there
             return PositionAtTime(serverTrip, time);
         }
 
@@ -889,6 +943,13 @@ namespace TankIO
             Vector3 renderPosition = authoritativePosition + positionError;
             Vector3 renderDisplacement = renderPosition - transform.position;
             transform.position = renderPosition;
+
+            LodTier lod = CameraController.Lod;
+            SetVisible(lod == LodTier.Near);
+            midIcon.enabled = lod == LodTier.Mid;
+            if (lod == LodTier.Mid)
+                midIcon.transform.rotation = Quaternion.identity; // written in world space: the hull yaw underneath varies per tank
+
             // determine tank facing direction based on render positions, currently doesnt sync across clients
             if (renderDisplacement.magnitude > 0.001f)
             {
@@ -901,6 +962,31 @@ namespace TankIO
             }
             RenderTurret();
         }
+
+        void SetVisible(bool shouldBeVisible)
+        {
+            if (visible == shouldBeVisible)
+                return;
+            visible = shouldBeVisible;
+            foreach (Renderer meshRenderer in renderers)
+                meshRenderer.enabled = shouldBeVisible;
+        }
+
+#if UNITY_SERVER
+        // the dedicated build strips Render, so nothing rotates the pivot TryFire gates on, and the transforms
+        // it would read are stale. aim from the same trip evaluations the gate itself compares.
+        void ServerAimTurret(double now)
+        {
+            Vector3 muzzlePosition = PositionAtTime(serverTrip, now);
+            IShellTarget target = ShellSystem.TargetFromObjectId(currentTargetId.Value);
+            Vector3 aimDirection = Vector3.zero;
+            if (target != null)
+                aimDirection = target.PositionAtTime(now) - muzzlePosition;
+            else if (forceFireArmed)
+                aimDirection = forceFireAim - muzzlePosition;
+            TurnTurret(aimDirection);
+        }
+#endif
 
         // purely cosmetic, never gates firing: the server shoots by distance alone. every machine aims its own
         // copy at the target's drawn position, so the turrets agree without any wire traffic beyond currentTargetId.
@@ -921,6 +1007,11 @@ namespace TankIO
                 aimDirection = target.DrawnPosition - transform.position;
             else if (forceFireArmed)
                 aimDirection = forceFireAim - transform.position; // server only; clients never have this armed
+            TurnTurret(aimDirection);
+        }
+
+        void TurnTurret(Vector3 aimDirection)
+        {
             aimDirection.y = 0f;
             Quaternion desiredRotation =
                 aimDirection != Vector3.zero ? Quaternion.LookRotation(aimDirection) : transform.rotation; // nothing to aim at: ease back to hull forward

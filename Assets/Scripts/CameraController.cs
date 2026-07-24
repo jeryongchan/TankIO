@@ -3,6 +3,13 @@ using UnityEngine.InputSystem;
 
 namespace TankIO
 {
+    public enum LodTier
+    {
+        Near,
+        Mid,
+        Far
+    }
+
     // top-down isometric orthographic camera
     [RequireComponent(typeof(Camera))]
     public class CameraController : MonoBehaviour
@@ -20,6 +27,15 @@ namespace TankIO
         private float edgeMarginFraction = 0.1f; // margin past the map edge as a fraction of the viewport
 
         [SerializeField]
+        private bool lodEnabled = true; // off forces the Near tier at every zoom
+
+        [SerializeField]
+        private float midTierZoom = 12f; // zoom past which icons stand in for meshes
+
+        [SerializeField]
+        private float farTierZoom = 30f; // zoom past which only HQ dots remain
+
+        [SerializeField]
         private TileGrid tileGrid;
 
         // world-space map bounds, pulled from the grid in RefreshClampLimits
@@ -33,9 +49,10 @@ namespace TankIO
         private Vector3 dragOrigin;
         private float groundZOffset;
 
-        // the HQ jumps the camera here the moment it spawns, so the view starts on your own base
-        // instead of the middle of the map.
+        // the HQ jumps the camera here the moment it spawns, so the view starts on your own base instead of the middle of the map.
         public static CameraController Instance { get; private set; }
+
+        public static LodTier Lod { get; private set; }
 
         private const float CameraDistance = 1000f; // so wont clip into large grid
 
@@ -69,6 +86,28 @@ namespace TankIO
             HandleMouseDrag();
             HandleScrollZoom();
             ClampCamera();
+            Lod = CurrentLod();
+        }
+
+        LodTier CurrentLod()
+        {
+            if (!lodEnabled)
+            {
+                return LodTier.Near;
+            }
+
+            if (cam.orthographicSize < midTierZoom)
+            {
+                return LodTier.Near;
+            }
+            else if (cam.orthographicSize < farTierZoom)
+            {
+                return LodTier.Mid;
+            }
+            else
+            {
+                return LodTier.Far;
+            }
         }
 
         // pull the map bounds from the grid; call again if the grid changes size.
@@ -105,7 +144,7 @@ namespace TankIO
                 return;
 
             cam.orthographicSize = Mathf.Clamp(
-                cam.orthographicSize - scroll * 0.01f * scrollZoomSpeed,
+                cam.orthographicSize - scroll * 0.01f * scrollZoomSpeed * cam.orthographicSize,
                 minZoom,
                 maxZoom
             );

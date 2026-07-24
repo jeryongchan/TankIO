@@ -139,7 +139,7 @@ namespace TankIO
             {
                 ulong commanderId = FirstBotCommanderId + (ulong)index;
                 // bot 0 deepest, last bot at the rim: a joining player finds a world already in progress
-                spawnHq(commanderId, NetworkManager.ServerClientId, (index + 1f) / botCount);
+                spawnHq(commanderId, NetworkManager.ServerClientId, Mathf.Sqrt((index + 1f) / botCount)); // sqrt gives every depth the same density
                 // stagger the decision: with 3 bots the decision tick lands at t=0.00 for bot 0, t=0.33 for bot 1, t=0.67 for bot 2, t=1.00 for bot 0 again;
                 double stagger = (double)index / Mathf.Max(1, botCount);
                 bots.Add(
