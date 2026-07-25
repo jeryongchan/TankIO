@@ -12,9 +12,6 @@ namespace TankIO
         [SerializeField]
         private TileGrid tileGrid;
 
-        [SerializeField]
-        private bool showCoordinates = true; // label every tile with its (col, row)
-
         private MeshFilter meshFilter;
         private Mesh lineMesh;
 
@@ -42,7 +39,7 @@ namespace TankIO
 
         void BuildLineMesh(Mesh mesh)
         {
-            tileGrid.LineExtents(out float x0, out float x1, out float z0, out float z1);
+            tileGrid.GridCornersBeforeTransform(out float x0, out float x1, out float z0, out float z1);
 
             int width = tileGrid.Width;
             int height = tileGrid.Height;
@@ -77,50 +74,5 @@ namespace TankIO
             mesh.RecalculateBounds();
         }
 
-#if UNITY_EDITOR
-        void OnDrawGizmos()
-        {
-            if (tileGrid == null)
-                return;
-
-            float lineHeight = transform.position.y;
-            DrawBlockedTiles(lineHeight);
-
-            if (!showCoordinates)
-                return;
-
-            for (int row = 0; row < tileGrid.Height; row++)
-            {
-                for (int col = 0; col < tileGrid.Width; col++)
-                {
-                    Vector3 center = tileGrid.TileToWorldCenter(new Vector2Int(col, row));
-                    center.y = lineHeight;
-                    UnityEditor.Handles.Label(center, "(" + col + ", " + row + ")");
-                }
-            }
-        }
-
-        void DrawBlockedTiles(float lineHeight)
-        {
-            float tileSize = tileGrid.TileSize;
-            Gizmos.color = new Color(1f, 0.2f, 0.2f, 0.5f);
-
-            for (int row = 0; row < tileGrid.Height; row++)
-            {
-                for (int col = 0; col < tileGrid.Width; col++)
-                {
-                    Vector2Int tile = new Vector2Int(col, row);
-                    if (tileGrid.IsWalkable(tile))
-                        continue;
-                    if (tileGrid.RingDepth01(tile) <= 0f)
-                        continue; // off the disc: not an obstacle, just not map
-
-                    Vector3 center = tileGrid.TileToWorldCenter(tile);
-                    center.y = lineHeight;
-                    Gizmos.DrawCube(center, new Vector3(tileSize, 0.02f, tileSize));
-                }
-            }
-        }
-#endif
     }
 }

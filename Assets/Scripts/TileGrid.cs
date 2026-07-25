@@ -10,14 +10,9 @@ namespace TankIO
         public float maxZ;
     }
 
-    // grid dimensions, tile data and world-space math. source of truth for renderers on
-    // this object (GroundRenderer, GridDebugOverlay). holds no visuals itself.
-    // not named Grid: UnityEngine.Grid already exists and the two would clash.
     [ExecuteAlways]
-    public class TileGrid : MonoBehaviour
+    public partial class TileGrid : MonoBehaviour
     {
-        // one grid per scene. tanks are spawned from a prefab, which cannot serialize a scene reference, so
-        // they reach the grid through here.
         public static TileGrid Instance { get; private set; }
 
         [Header("Grid")]
@@ -30,11 +25,8 @@ namespace TankIO
         [SerializeField, Min(0.01f)]
         private float tileSize = 1f;
 
-        [SerializeField]
-        private Vector2Int[] blockedTiles; // hand-placed obstacles to path around, for testing
-
         [Header("Shape")]
-        [SerializeField, Tooltip("Playable area is a disc inscribed in width x height. Off when testing on a full square.")]
+        [SerializeField]
         private bool discShaped = true;
 
         private TileData[,] tiles;
@@ -54,14 +46,12 @@ namespace TankIO
 
         public event System.Action GridChanged;
 
-        // tile-space centre of the map, in the same units as a Vector2Int tile coord.
-        public Vector2 CenterTileSpace
+        public Vector2 CenterPoint
         {
             get { return new Vector2(width * 0.5f, height * 0.5f); }
         }
 
-        // rim radius of the playable disc, in tiles.
-        public float Radius
+        public float Radius // in tiles
         {
             get { return Mathf.Min(width, height) * 0.5f; }
         }
@@ -70,7 +60,7 @@ namespace TankIO
         // gold rate, move cost and spawn placement are all curves over this.
         public float RingDepth01(Vector2Int tile)
         {
-            float distance = (TileCentreOffset(tile) - CenterTileSpace).magnitude;
+            float distance = (TileCentreOffset(tile) - CenterPoint).magnitude;
             return Mathf.Clamp01(1f - distance / Radius);
         }
 
@@ -88,23 +78,18 @@ namespace TankIO
         void BuildTiles()
         {
             tiles = new TileData[width, height];
-            Vector2 center = CenterTileSpace;
-            float radius = Radius;
+            int groundCount = 0;
             for (int row = 0; row < height; row++)
             {
                 for (int col = 0; col < width; col++)
                 {
-                    Vector2Int tile = new Vector2Int(col, row);
-                    tiles[col, row].Walkable =
-                        !discShaped || (TileCentreOffset(tile) - center).sqrMagnitude <= radius * radius;
+                    bool ground = IsGround(new Vector2Int(col, row));
+                    tiles[col, row].Walkable = ground;
+                    if (ground)
+                        groundCount++;
                 }
             }
-
-            foreach (Vector2Int blocked in blockedTiles)
-            {
-                if (IsInsideGrid(blocked))
-                    tiles[blocked.x, blocked.y].Walkable = false;
-            }
+            PlantTrees(groundCount); // plant last so other structures can be placed first
         }
 
         public bool IsWalkable(Vector2Int tile)
@@ -114,9 +99,21 @@ namespace TankIO
             return IsInsideGrid(tile) && tiles[tile.x, tile.y].Walkable;
         }
 
-        // world extents centered on the origin, reaching half a tile past the border
-        // cell centers so cell edges are included.
-        public void LineExtents(out float x0, out float x1, out float z0, out float z1)
+        // the disc test itself rather than a stored flag: BuildTiles seeds Walkable from it, so the two cannot describe different shapes.
+        public bool IsGround(Vector2Int tile)
+        {
+            if (!IsInsideGrid(tile))
+                return false;
+            if (!discShaped)
+                return true;
+            float radius = Radius;
+            return (TileCentreOffset(tile) - CenterPoint).sqrMagnitude <= radius * radius;
+        }
+
+        // local extents centered on the origin, reaching half a tile past the border
+        // cell centers so cell edges are included. transform is not applied: CalculateWorldMapBounds
+        // is the world-space version, and it exists because a rotated grid stops being a rect.
+        public void GridCornersBeforeTransform(out float x0, out float x1, out float z0, out float z1)
         {
             float halfW = width * 0.5f * tileSize;
             float halfH = height * 0.5f * tileSize;
@@ -136,14 +133,14 @@ namespace TankIO
         // untransformed tile centre. mesh builders want this: their vertices are local already.
         public Vector3 TileToLocalCenter(Vector2Int tile)
         {
-            LineExtents(out float x0, out float x1, out float z0, out float z1);
+            GridCornersBeforeTransform(out float x0, out _, out float z0, out _);
             return new Vector3(x0 + (tile.x + 0.5f) * tileSize, 0f, z0 + (tile.y + 0.5f) * tileSize);
         }
 
         // tile containing a world point. false if the point falls outside the grid.
         public bool WorldToTile(Vector3 worldPosition, out Vector2Int tile)
         {
-            LineExtents(out float x0, out float x1, out float z0, out float z1);
+            GridCornersBeforeTransform(out float x0, out _, out float z0, out _);
             Vector3 local = transform.InverseTransformPoint(worldPosition);
 
             int col = Mathf.FloorToInt((local.x - x0) / tileSize);
@@ -161,7 +158,7 @@ namespace TankIO
         // spans wider on X/Z). consumed by the camera for clamping.
         public MapBounds CalculateWorldMapBounds()
         {
-            LineExtents(out float x0, out float x1, out float z0, out float z1);
+            GridCornersBeforeTransform(out float x0, out float x1, out float z0, out float z1);
 
             Vector3[] corners =
             {
@@ -191,7 +188,15 @@ namespace TankIO
 #if UNITY_EDITOR
         void OnValidate()
         {
-            BuildTiles(); // width/height/blockedTiles may have changed
+            BuildTiles(); // width/height may have changed. tile data only: no GameObjects, so this is legal here
+        }
+
+        // every renderer at once. deliberately not raised from OnValidate: that runs once per
+        // keystroke, and instantiating or destroying a GameObject inside it is forbidden.
+        [ContextMenu("Rebuild Map")]
+        void RebuildMap()
+        {
+            BuildTiles();
             if (GridChanged != null)
                 GridChanged();
         }

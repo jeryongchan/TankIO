@@ -108,6 +108,8 @@ namespace TankIO
                 {
                     if (hq.CommanderId == CommanderId)
                         continue;
+                    if (!hq.Attackable)
+                        continue; // mid-glide: the order would drop and the raid cooldown would be spent on nothing
                     float distanceSquared = (hq.HomeTile - home.HomeTile).sqrMagnitude;
                     if (distanceSquared < nearestDistanceSquared)
                     {

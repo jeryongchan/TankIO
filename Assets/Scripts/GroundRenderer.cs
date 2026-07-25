@@ -2,21 +2,28 @@ using UnityEngine;
 
 namespace TankIO
 {
-    // one quad per walkable tile, welded into a single mesh, so the drawn ground is the playable
-    // area and nothing else. rebuilt only on GridChanged. this is the mesh the chunked/dirty-rebake
-    // pass will later split by region; the per-tile loop is already the right shape for that.
+    // one quad spanning the whole grid, plus an R8 mask holding one texel per tile. the shader
+    // clips the texels outside the disc, so the silhouette is a texture lookup instead of geometry.
+    // the previous build emitted four verts per ground tile: 3.14M verts for a plane whose every
+    // vertex was y=0 and every normal was up. the silhouette was the only thing that bought.
     [ExecuteAlways]
     [RequireComponent(typeof(TileGrid), typeof(MeshFilter), typeof(MeshRenderer))]
     public class GroundRenderer : MonoBehaviour
     {
         private TileGrid tileGrid;
         private MeshFilter meshFilter;
+        private MeshRenderer meshRenderer;
         private Mesh groundMesh;
+        private Texture2D groundMask;
+        private MaterialPropertyBlock properties;
+
+        private static readonly int GroundMaskId = Shader.PropertyToID("_GroundMask");
 
         void OnEnable()
         {
             tileGrid = GetComponent<TileGrid>();
             meshFilter = GetComponent<MeshFilter>();
+            meshRenderer = GetComponent<MeshRenderer>();
             tileGrid.GridChanged += Rebuild;
             Rebuild();
         }
@@ -26,64 +33,104 @@ namespace TankIO
             tileGrid.GridChanged -= Rebuild;
             if (groundMesh != null)
                 DestroyImmediate(groundMesh);
+            if (groundMask != null)
+                DestroyImmediate(groundMask);
         }
 
         void Rebuild()
         {
+            BuildQuad();
+            BuildGroundMask();
+        }
+
+        void BuildQuad()
+        {
             if (groundMesh == null)
                 groundMesh = new Mesh { name = "Ground", hideFlags = HideFlags.DontSave };
 
-            var vertices = new System.Collections.Generic.List<Vector3>();
-            var normals = new System.Collections.Generic.List<Vector3>();
-            var uv = new System.Collections.Generic.List<Vector2>();
-            var triangles = new System.Collections.Generic.List<int>();
+            tileGrid.GridCornersBeforeTransform(out float x0, out float x1, out float z0, out float z1);
 
-            float half = tileGrid.TileSize * 0.5f;
-            for (int row = 0; row < tileGrid.Height; row++)
+            var vertices = new Vector3[]
             {
-                for (int col = 0; col < tileGrid.Width; col++)
-                {
-                    Vector2Int tile = new Vector2Int(col, row);
-                    if (!tileGrid.IsWalkable(tile))
-                        continue;
+                new Vector3(x0, 0f, z0),
+                new Vector3(x0, 0f, z1),
+                new Vector3(x1, 0f, z1),
+                new Vector3(x1, 0f, z0),
+            };
 
-                    Vector3 c = tileGrid.TileToLocalCenter(tile);
-                    int baseIndex = vertices.Count;
-                    vertices.Add(new Vector3(c.x - half, 0f, c.z - half));
-                    vertices.Add(new Vector3(c.x - half, 0f, c.z + half));
-                    vertices.Add(new Vector3(c.x + half, 0f, c.z + half));
-                    vertices.Add(new Vector3(c.x + half, 0f, c.z - half));
+            // uv spans the grid, so uv and tile coords are the same space and the mask needs no remapping.
+            // detail textures do NOT use this uv: the shader tiles them by world position, which keeps
+            // texel density fixed no matter how large the grid gets.
+            var uv = new Vector2[]
+            {
+                new Vector2(0f, 0f),
+                new Vector2(0f, 1f),
+                new Vector2(1f, 1f),
+                new Vector2(1f, 0f),
+            };
 
-                    for (int i = 0; i < 4; i++)
-                        normals.Add(Vector3.up);
+            var normals = new Vector3[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up };
 
-                    // uv per tile, so a ground texture tiles once per cell instead of stretching over the disc
-                    uv.Add(new Vector2(0f, 0f));
-                    uv.Add(new Vector2(0f, 1f));
-                    uv.Add(new Vector2(1f, 1f));
-                    uv.Add(new Vector2(1f, 0f));
+            // w = -1 puts the bitangent along +Z, matching uv.y. without tangents the normal maps
+            // would light from an arbitrary direction.
+            var tangent = new Vector4(1f, 0f, 0f, -1f);
+            var tangents = new Vector4[] { tangent, tangent, tangent, tangent };
 
-                    triangles.Add(baseIndex);
-                    triangles.Add(baseIndex + 1);
-                    triangles.Add(baseIndex + 2);
-                    triangles.Add(baseIndex);
-                    triangles.Add(baseIndex + 2);
-                    triangles.Add(baseIndex + 3);
-                }
-            }
+            var triangles = new int[] { 0, 1, 2, 0, 2, 3 };
 
             groundMesh.Clear();
-            // a 45x45 disc is ~6.4k verts, but the grid is inspector-tunable and 16-bit tops out at 65k
-            groundMesh.indexFormat = vertices.Count > 65000
-                ? UnityEngine.Rendering.IndexFormat.UInt32
-                : UnityEngine.Rendering.IndexFormat.UInt16;
             groundMesh.SetVertices(vertices);
             groundMesh.SetNormals(normals);
+            groundMesh.SetTangents(tangents);
             groundMesh.SetUVs(0, uv);
             groundMesh.SetTriangles(triangles, 0);
             groundMesh.RecalculateBounds();
 
             meshFilter.sharedMesh = groundMesh;
+        }
+
+        void BuildGroundMask()
+        {
+            int w = tileGrid.Width;
+            int h = tileGrid.Height;
+
+            if (groundMask != null && (groundMask.width != w || groundMask.height != h))
+            {
+                DestroyImmediate(groundMask);
+                groundMask = null;
+            }
+
+            if (groundMask == null)
+            {
+                // no mip chain: a mip would average ground against void and eat the rim.
+                groundMask = new Texture2D(w, h, TextureFormat.R8, false, true)
+                {
+                    name = "GroundMask",
+                    hideFlags = HideFlags.DontSave,
+                    wrapMode = TextureWrapMode.Clamp,
+                };
+            }
+
+            // nearest texel: the rim keeps its square tile edges instead of blending into a curve
+            groundMask.filterMode = FilterMode.Point;
+
+            var texels = new byte[w * h];
+            for (int row = 0; row < h; row++)
+            {
+                int rowStart = row * w;
+                for (int col = 0; col < w; col++)
+                    texels[rowStart + col] = tileGrid.IsGround(new Vector2Int(col, row)) ? (byte)255 : (byte)0;
+            }
+
+            groundMask.SetPixelData(texels, 0);
+            groundMask.Apply(false, false);
+            // a property block rather than the shared material: the mask is generated per scene and
+            // writing it to the material asset would dirty it on every domain reload.
+            if (properties == null)
+                properties = new MaterialPropertyBlock();
+            meshRenderer.GetPropertyBlock(properties);
+            properties.SetTexture(GroundMaskId, groundMask);
+            meshRenderer.SetPropertyBlock(properties);
         }
     }
 }

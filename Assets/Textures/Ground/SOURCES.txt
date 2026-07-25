@@ -1,0 +1,15 @@
+Ground surface textures — ambientCG, CC0 1.0 (public domain, no attribution required).
+
+Grass_Ground037   https://ambientcg.com/a/Ground037   2048x2048, 2.1 x 2.1 m
+Dirt_Ground081    https://ambientcg.com/a/Ground081   2048x1024, non-square
+
+Downloaded as the 2K-JPG packs. Four maps kept per surface:
+  Color         albedo
+  NormalGL      OpenGL-convention normals, which is what Unity expects
+  Roughness     inverted to smoothness in TankIO/Ground
+  Displacement  used only as a height mask for the grass/dirt blend, never for tessellation
+
+Dropped from the packs: NormalDX (wrong handedness for Unity), AmbientOcclusion (little value on
+a flat plane under one directional light), and the .blend / .usdc / .mtlx / .tres files.
+
+Dirt_Ground081 is 2:1. Its tiling vector must stay 2:1 or the stones stretch.

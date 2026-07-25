@@ -106,7 +106,7 @@ namespace TankIO
         Vector2Int HqSpawnTile(float spawnDepth)
         {
             TileGrid grid = TileGrid.Instance;
-            Vector2 center = grid.CenterTileSpace;
+            Vector2 center = grid.CenterPoint;
             float rimRadius = grid.Radius - (HqController.FootprintRadius + 1); // the footprint fits inside the rim
             float minRadius = HqController.FootprintRadius * 2 + 2; // innermost ring whose footprint clears the capital's
             float startRadius = Mathf.Lerp(minRadius, rimRadius, spawnDepth);

@@ -34,6 +34,11 @@ namespace TankIO
         private float serverHitFraction = float.PositiveInfinity; // the server's impact as a fraction of the flight, applied when the local flight reaches it
         private Component serverHitTarget; // tank or HQ; only its drawn transform is read
 
+        // trees are not an event: the client owns the same tile data and the same walk the server used,
+        // so it stops the shell at the same trunk without being told. a tree felled but not yet synced
+        // here stops a shell that the server let through, which is a frame of cosmetic disagreement.
+        private float hitTreeDistance = float.MaxValue;
+
         public static void Spawn(
             GameObject prefab,
             int shellId,
@@ -56,6 +61,9 @@ namespace TankIO
             shell.fireTime = System.Math.Max(fireTime, NetworkManager.Singleton.ServerTime.Time);
             shell.speed = speed;
             shell.hitRadius = hitRadius;
+            // walked from the level flight line the visual actually flies, not the server's, so the stop
+            // lands on the same trunk the server picked.
+            shell.hitTreeDistance = ShellSystem.DistanceToHitTree(muzzlePosition, aimPoint, out _);
             lastHitMarker = shell.hitMarker;
             visualsByShellId[shellId] = shell;
         }
@@ -116,6 +124,15 @@ namespace TankIO
                     SpawnMarker(hitMarker, transform.position);
                     Destroy(gameObject);
                 }
+                return;
+            }
+
+            // generic landing, not the hit marker: a trunk stopping a shell carries no verdict about damage,
+            // the same as reaching the aim point.
+            if (distanceTraveled >= hitTreeDistance)
+            {
+                SpawnMarker(landingMarker, transform.position);
+                Destroy(gameObject);
                 return;
             }
 

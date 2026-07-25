@@ -68,10 +68,24 @@ namespace TankIO
                     shooterCommanderId = shooterCommanderId,
                     shooterObjectId = shooterObjectId,
                     speed = speed,
-                    damage = damage
+                    damage = damage,
+                    hitTreeDistance = DistanceToHitTree(muzzlePosition, aimPoint, out Vector2Int hitTile),
+                    hitTreeTile = hitTile
                 }
             );
             return lastShellId;
+        }
+
+        // shared by the server's shells and the client's visuals, so both stop a shell at the same trunk without exchanging a message on it.
+        public static float DistanceToHitTree(Vector3 muzzlePosition, Vector3 aimPoint, out Vector2Int tile)
+        {
+            bool hitTree = TileGrid.Instance.TryFindTreeAlongSegment(
+                muzzlePosition,
+                aimPoint,
+                out float distance,
+                out tile
+            );
+            return hitTree ? distance : float.MaxValue;
         }
 
         // hit or miss is decided here, per frame, by distance; the flight everyone sees is cosmetic.
@@ -100,6 +114,26 @@ namespace TankIO
                 float flightLength = (shell.aimPoint - shell.muzzlePosition).magnitude;
                 float distanceTraveled = shell.speed * (float)(now - shell.fireTime);
                 Vector3 shellPosition = Vector3.MoveTowards(shell.muzzlePosition, shell.aimPoint, distanceTraveled);
+
+                // no need to check other tanks from earlier shell path, because they cant walk on tree tiles anyway
+                if (distanceTraveled >= shell.hitTreeDistance)
+                {
+                    if (TileGrid.Instance.HasTree(shell.hitTreeTile)) // check if the tree is still there when shell arrive
+                    {
+                        liveShells.RemoveAt(index);
+                        TreeSystem.Instance.RegisterShellHit(shell.hitTreeTile);
+                        continue;
+                    }
+                    else // else is to be more explicit: if somehow the tree is felled mid-shell-flight, check again if there are another tree further down the flight path
+                    {
+                        shell.hitTreeDistance = DistanceToHitTree(
+                            shell.muzzlePosition,
+                            shell.aimPoint,
+                            out shell.hitTreeTile
+                        );
+                        liveShells[index] = shell;
+                    }
+                }
 
                 IShellTarget hitTarget = null;
                 float bestOverlap = 0f; // how far inside its radius the shell sits; deepest wins when several overlap
@@ -153,6 +187,8 @@ namespace TankIO
             public ulong shooterObjectId; // so an idle victim can fire back at the shooter
             public float speed;
             public int damage;
+            public float hitTreeDistance; // MaxValue means the line is clear.
+            public Vector2Int hitTreeTile;
         }
     }
 }

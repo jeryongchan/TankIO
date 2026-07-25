@@ -102,6 +102,13 @@ namespace TankIO
         // held until it dies or command overrides. server writes and replicated so every copy can aim its turret at it. 0 = none.
         private readonly NetworkVariable<ulong> currentTargetId = new NetworkVariable<ulong>();
 
+        // a tree has no NetworkObject to name, so its order carries the tile instead of an id. exactly one
+        // of the two target fields is ever live; the setters below are the only writers.
+        public static readonly Vector2Int NoTile = new Vector2Int(-1, -1);
+        private readonly NetworkVariable<Vector2Int> currentTargetTile = new NetworkVariable<Vector2Int>(
+            new Vector2Int(-1, -1)
+        );
+
         private double lastFireTime; // server only, reload gate
         private double targetCheckTimer; // server only
         private int lastAcknowledgedCommandId; // server only: the command the current trip answers, so its own rewrites reuse it
@@ -139,6 +146,7 @@ namespace TankIO
         private Trip renderedTrip; // which of the two the last frame drew, to notice a swap
         private int lastIssuedCommandId; // owner only: the latest command's id, so an old acknowledgement cannot end a newer command's prediction
         private ulong predictedTargetId; // owner only: the target the owner last commanded, aimed at immediately instead of waiting a round trip for currentTargetId
+        private Vector2Int predictedTargetTile = new Vector2Int(-1, -1); // owner only, the tree half of predictedTargetId
         private bool predictedAutoAttack; // owner only: whether the latest click was an attack-move, until the server's autoAttackActive answer lands's
 
         private Vector3 positionError;
@@ -220,7 +228,29 @@ namespace TankIO
                 }
             );
             predictedTargetId = 0;
+            predictedTargetTile = NoTile;
             predictedAutoAttack = autoAttack;
+        }
+
+        // the owner's half of every attack order: stand still when the target is already in range, else
+        // drive to a firing position. a unit and a tree differ only in the aim, which the caller sets.
+        void PredictAttackApproach(Vector3 targetPosition, double clickTime)
+        {
+            Trip currentTrip = predictedTrip ?? serverTrip;
+            Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
+            Vector2Int[] path =
+                (targetPosition - startPosition).magnitude <= IdealFiringDistance
+                    ? StopPath(currentTrip, clickTime)
+                    : PathOrStop(currentTrip, startPosition, FiringTile(startPosition, targetPosition), clickTime);
+            predictedTrip = TripFromState(
+                new TripState
+                {
+                    StartPosition = startPosition,
+                    Path = path,
+                    StartTime = clickTime
+                }
+            );
+            predictedAutoAttack = false;
         }
 
         // owner only submits input command (goal, i.e. target tile),
@@ -297,24 +327,9 @@ namespace TankIO
         {
             lastIssuedCommandId++;
             double clickTime = NetworkManager.ServerTime.Time;
-            Trip currentTrip = predictedTrip ?? serverTrip;
-            Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
-            Vector3 targetPosition = target.PositionAtTime(clickTime);
-            Vector2Int[] path =
-                (targetPosition - startPosition).magnitude <= IdealFiringDistance
-                    ? StopPath(currentTrip, clickTime)
-                    : PathOrStop(currentTrip, startPosition, FiringTile(startPosition, targetPosition), clickTime);
-            predictedTrip = TripFromState(
-                new TripState
-                {
-                    StartPosition = startPosition,
-                    Path = path,
-                    StartTime = clickTime
-                }
-            );
+            PredictAttackApproach(target.PositionAtTime(clickTime), clickTime);
             predictedTargetId = target.NetworkObjectId; // the turret starts its traverse now; the traverse masks the round trip
-            predictedAutoAttack = false;
-
+            predictedTargetTile = NoTile;
             SubmitAttackCommandRpc(target.NetworkObjectId, lastIssuedCommandId);
         }
 
@@ -335,7 +350,7 @@ namespace TankIO
         public void ExecuteRecall(int commandId)
         {
             double now = NetworkManager.ServerTime.Time;
-            currentTargetId.Value = 0;
+            ClearTarget();
             autoAttackActive.Value = false;
             Vector3 startPosition = PositionAtTime(serverTrip, now);
             HqController hq = HqController.ForCommander(CommanderId);
@@ -384,7 +399,7 @@ namespace TankIO
         public void ExecuteMove(Vector2Int goal, int commandId)
         {
             double now = NetworkManager.ServerTime.Time;
-            currentTargetId.Value = 0; // a move order overrides an attack order
+            ClearTarget(); // a move order overrides an attack order
             recallActive = false;
             autoAttackActive.Value = false;
             // the start is server calculated based on owner's command. the owner set off ~one-way latency earlier.
@@ -399,22 +414,114 @@ namespace TankIO
             ExecuteAttack(targetObjectId, commandId);
         }
 
+        // the only writers of the two target fields, so "a unit or a tree, never both" holds in one place
+        // instead of at every order site.
+        void SetTargetUnit(ulong targetObjectId)
+        {
+            currentTargetId.Value = targetObjectId;
+            currentTargetTile.Value = NoTile;
+        }
+
+        void SetTargetTree(Vector2Int tile)
+        {
+            currentTargetId.Value = 0;
+            currentTargetTile.Value = tile;
+        }
+
+        void ClearTarget()
+        {
+            currentTargetId.Value = 0;
+            currentTargetTile.Value = NoTile;
+        }
+
+        bool HasTreeTarget
+        {
+            get { return currentTargetTile.Value.x >= 0; }
+        }
+
+        // a tree is a fixed point that stops existing, so this needs none of the chase-a-mover machinery:
+        // no PositionAtTime, no re-path when it flees, no despawn to resolve. just a tile.
+        // the tile is not re-checked for a tree here: the caller tested it to route the click this way at
+        // all, and the server tests it again on arrival, which is the test that decides anything.
+        public void Attack(Vector2Int treeTile)
+        {
+            lastIssuedCommandId++;
+            double clickTime = NetworkManager.ServerTime.Time;
+            PredictAttackApproach(TileGrid.Instance.TileToWorldCenter(treeTile), clickTime);
+            predictedTargetId = 0;
+            predictedTargetTile = treeTile;
+            SubmitAttackTreeRpc(treeTile, lastIssuedCommandId);
+        }
+
+        [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Owner)]
+        void SubmitAttackTreeRpc(Vector2Int treeTile, int commandId)
+        {
+            ExecuteAttackTree(treeTile, commandId);
+        }
+
+        public void ExecuteAttackTree(Vector2Int treeTile, int commandId)
+        {
+            double now = NetworkManager.ServerTime.Time;
+            recallActive = false; // an attack order overrides the standing one, satisfiable or not
+            autoAttackActive.Value = false;
+            if (!TileGrid.Instance.HasTree(treeTile))
+            {
+                AbortAttackOrder(now, commandId); // felled between the click and its arrival
+                return;
+            }
+            SetTargetTree(treeTile);
+            // 0: a tree has no NetworkObject to name as the shell's target, same as force fire
+            ServerApproachAndFire(TileGrid.Instance.TileToWorldCenter(treeTile), 0, now, commandId);
+        }
+
         public void ExecuteAttack(ulong targetObjectId, int commandId)
         {
             double now = NetworkManager.ServerTime.Time;
-            IShellTarget target = ShellSystem.TargetFromObjectId(targetObjectId);
-            if (target == null || target.CommanderId == CommanderId || !target.Attackable)
-                return; // already dead, own target, or an HQ mid-glide
             recallActive = false;
             autoAttackActive.Value = false;
-            currentTargetId.Value = targetObjectId;
-            // always write a trip stamped with this click's id, so it clears the owner's prediction through the ack path
-            // in range: move to the next tile centre, out of range: move to the firing tile.
-            if ((target.PositionAtTime(now) - PositionAtTime(serverTrip, now)).magnitude <= IdealFiringDistance)
+            IShellTarget target = ShellSystem.TargetFromObjectId(targetObjectId);
+            if (target == null || target.CommanderId == CommanderId || !target.Attackable)
+            {
+                AbortAttackOrder(now, commandId); // already dead, own target, or an HQ mid-glide
+                return;
+            }
+            SetTargetUnit(targetObjectId);
+            ServerApproachAndFire(target.PositionAtTime(now), targetObjectId, now, commandId);
+        }
+
+        // the server's half of every attack order, unit or tree.
+        // always write a trip stamped with this click's id, so it clears the owner's prediction through the ack path
+        // in range: move to the next tile centre, out of range: move to the firing tile.
+        void ServerApproachAndFire(Vector3 targetPosition, ulong aimTargetId, double now, int commandId)
+        {
+            if ((targetPosition - PositionAtTime(serverTrip, now)).magnitude <= IdealFiringDistance)
                 StopAtNextTile(now, commandId);
             else
-                IssueChaseTrip(target, now, commandId);
-            TryFire(target.NetworkObjectId, target.PositionAtTime(now), now); // first shot right away, not at the next check
+                IssueChaseTrip(targetPosition, now, commandId);
+            TryFire(aimTargetId, targetPosition, now); // first shot right away, not at the next check
+        }
+
+        // nothing left to shoot, on arrival or mid-chase: drop the aim and truncate the chase instead of
+        // ghost-driving the rest of the approach. the trip is written even when it changes nothing the tank
+        // drives, because its command id is the ack that ends the owner's prediction - a silent return
+        // leaves the owner driving an approach the server never ran.
+        void AbortAttackOrder(double now, int commandId)
+        {
+            ClearTarget();
+            StopAtNextTile(now, commandId);
+        }
+
+        void UpdateTreeAttack(double now)
+        {
+            Vector2Int tile = currentTargetTile.Value;
+            if (!TileGrid.Instance.HasTree(tile))
+            {
+                AbortAttackOrder(now, lastAcknowledgedCommandId); // felled, by this tank or anyone
+                return;
+            }
+            // a tree never moves, so the trip written at order time already ends in range; the re-path
+            // inside only ever catches a chase the pathfinder could not satisfy then.
+            HoldFiringPosition(TileGrid.Instance.TileToWorldCenter(tile), 0, now);
         }
 
         // fires whenever in range (driving or not); drives toward the target only while too far to fire.
@@ -435,30 +542,38 @@ namespace TankIO
                 UpdateAutoAttack(now);
                 return;
             }
+            if (HasTreeTarget)
+            {
+                UpdateTreeAttack(now);
+                return;
+            }
             if (currentTargetId.Value == 0)
                 return;
             IShellTarget target = ShellSystem.TargetFromObjectId(currentTargetId.Value);
             if (target == null || !target.Attackable)
             {
-                currentTargetId.Value = 0; // the clicked target died (or packed up and left)
-                StopAtNextTile(now, lastAcknowledgedCommandId); // truncate the chase instead of ghost-driving the rest of the approach
+                AbortAttackOrder(now, lastAcknowledgedCommandId); // the clicked target died (or packed up and left)
                 return;
             }
 
-            Vector3 myPosition = PositionAtTime(serverTrip, now);
-            Vector3 targetPosition = target.PositionAtTime(now);
-            float distance = (targetPosition - myPosition).magnitude;
+            HoldFiringPosition(target.PositionAtTime(now), target.NetworkObjectId, now);
+        }
+
+        // the 0.3s check's tail, shared by unit and tree orders: close the distance while the current trip
+        // does not deliver a firing position, stop early once the target is within one, and fire either way.
+        void HoldFiringPosition(Vector3 targetPosition, ulong aimTargetId, double now)
+        {
+            float distance = (targetPosition - PositionAtTime(serverTrip, now)).magnitude;
 
             // re-path only when the trip no longer ends within range
             // a still target costs no messages, a fleeing one will cost more.
-            float tripEndDistanceFromTarget = (targetPosition - serverTrip.EndPoint).magnitude;
-            bool tripDeliversFiringPosition = tripEndDistanceFromTarget <= AttackRange;
+            bool tripDeliversFiringPosition = (targetPosition - serverTrip.EndPoint).magnitude <= AttackRange;
             if (distance > IdealFiringDistance && !tripDeliversFiringPosition)
-                TryImproveChaseTrip(target, now);
+                TryImproveChaseTrip(targetPosition, now);
             else if (distance <= IdealFiringDistance && !AlreadyStopping(serverTrip, now))
                 StopAtNextTile(now, lastAcknowledgedCommandId); // target walked into range: stop early, keep firing
 
-            TryFire(target.NetworkObjectId, targetPosition, now);
+            TryFire(aimTargetId, targetPosition, now);
         }
 
         // hold the current target while it stays in range, else take the nearest enemy tank in range.
@@ -473,7 +588,7 @@ namespace TankIO
             if (!targetStillValid) // holding a valid target stops the turret flipping between two in-range enemies
             {
                 target = NearestEnemyTankInRange(myPosition, now);
-                currentTargetId.Value = target != null ? target.NetworkObjectId : 0;
+                SetTargetUnit(target != null ? target.NetworkObjectId : 0);
             }
             if (target != null)
             {
@@ -566,19 +681,20 @@ namespace TankIO
         }
 
         // click path: a command always answers with a trip, unreachable or not (see PathOrStop)
-        void IssueChaseTrip(IShellTarget target, double now, int commandId)
+        // a world position rather than a target: a tree is a tile centre, with no trip to evaluate.
+        void IssueChaseTrip(Vector3 targetPosition, double now, int commandId)
         {
             Vector3 startPosition = PositionAtTime(serverTrip, now);
-            Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(now));
+            Vector2Int goal = FiringTile(startPosition, targetPosition);
             WriteTripState(startPosition, PathOrStop(serverTrip, startPosition, goal, now), now, commandId);
         }
 
         // check path: the 0.3s check only writes improvements. an unreachable standoff writes nothing
         // and is retried next check, instead of stopping the tank or spamming equivalent rewrites.
-        void TryImproveChaseTrip(IShellTarget target, double now)
+        void TryImproveChaseTrip(Vector3 targetPosition, double now)
         {
             Vector3 startPosition = PositionAtTime(serverTrip, now);
-            Vector2Int goal = FiringTile(startPosition, target.PositionAtTime(now));
+            Vector2Int goal = FiringTile(startPosition, targetPosition);
             Vector2Int[] path = ComputePath(startPosition, goal, now);
             if (path.Length == 0)
                 return;
@@ -693,13 +809,14 @@ namespace TankIO
             HqController homeHq = HqController.ForCommander(CommanderId);
             if (homeHq != null)
                 homeHq.MarkAggressor(attackerCommanderId); // my home garrison remembers who shot me
-            // an idle tank answers fire: auto-attack flips on, aimed at the shooter. any standing order outranks it.
-            if (!recallActive && !autoAttackActive.Value && currentTargetId.Value == 0)
+            // an idle tank answers fire: auto-attack flips on, aimed at the shooter. any standing order outranks it,
+            // a tree order included: felling is a command, not idleness.
+            if (!recallActive && !autoAttackActive.Value && currentTargetId.Value == 0 && !HasTreeTarget)
             {
                 autoAttackActive.Value = true;
                 autoAttackIsRetaliation = true;
                 autoAttackLastTargetTime = NetworkManager.ServerTime.Time; // the disarm clock starts at the hit
-                currentTargetId.Value = attackerObjectId;
+                SetTargetUnit(attackerObjectId);
             }
             ShellImpactRpc(shellId, hitFraction); // sent before the despawn below, or a killing blow could never announce itself
             health.Value -= damage;
@@ -982,6 +1099,8 @@ namespace TankIO
             Vector3 aimDirection = Vector3.zero;
             if (target != null)
                 aimDirection = target.PositionAtTime(now) - muzzlePosition;
+            else if (HasTreeTarget)
+                aimDirection = TileGrid.Instance.TileToWorldCenter(currentTargetTile.Value) - muzzlePosition;
             else if (forceFireArmed)
                 aimDirection = forceFireAim - muzzlePosition;
             TurnTurret(aimDirection);
@@ -1000,11 +1119,17 @@ namespace TankIO
             // the owner's own belief about auto-attack wins over the not-yet-updated replicated flag.
             // CommandedByLocalPlayer, not IsOwner: a host network-owns bot tanks but never predicts for them.
             bool followServerAim = predictedTrip != null ? predictedAutoAttack : autoAttackActive.Value;
+            bool useOwnCommand = CommandedByLocalPlayer && !followServerAim;
             IShellTarget target = ShellSystem.TargetFromObjectId(
-                CommandedByLocalPlayer && !followServerAim ? predictedTargetId : currentTargetId.Value
+                useOwnCommand ? predictedTargetId : currentTargetId.Value
             );
+            // the tree tile follows the same predicted-vs-replicated split, so the commanding player's turret
+            // swings the moment they click instead of waiting for the tile to replicate back.
+            Vector2Int aimTile = useOwnCommand ? predictedTargetTile : currentTargetTile.Value;
             if (target != null)
                 aimDirection = target.DrawnPosition - transform.position;
+            else if (aimTile.x >= 0)
+                aimDirection = TileGrid.Instance.TileToWorldCenter(aimTile) - transform.position;
             else if (forceFireArmed)
                 aimDirection = forceFireAim - transform.position; // server only; clients never have this armed
             TurnTurret(aimDirection);

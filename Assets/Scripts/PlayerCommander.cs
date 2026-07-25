@@ -171,6 +171,14 @@ namespace TankIO
             groundPlane.Raycast(ray, out float groundDistance); // return grounddistance
             if (!TileGrid.Instance.WorldToTile(ray.GetPoint(groundDistance), out Vector2Int goal))
                 return; // clicked outside the grid
+            // trees carry no collider, so they are not something under the cursor: the ground tile is the tree.
+            // checked before the move order, or clicking a tree would path into a blocked tile.
+            if (selectedHq == null && selection.Count > 0 && TileGrid.Instance.HasTree(goal))
+            {
+                foreach (TankController tank in selection)
+                    tank.Attack(goal);
+                return;
+            }
             if (selectedHq != null)
             {
                 selectedHq.RequestMove(CapitalController.SnapToDock(goal)); // hover already showed the cost; this click is the confirm
