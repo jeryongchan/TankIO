@@ -24,19 +24,29 @@ Material:
   m_SavedProperties:
     serializedVersion: 3
     m_TexEnvs:
-    - _Albedo:
-        m_Texture: {fileID: 2800000, guid: 8272a31fea88da344b17004db016fe05, type: 3}
+    - _DirtAlbedo:
+        m_Texture: {fileID: 2800000, guid: f9880fcfb10b0f1499ee28217e0b7866, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _GrassAlbedo:
+        m_Texture: {fileID: 2800000, guid: ac33c3ba5b1bf084d8d0f235dbe3333d, type: 3}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
     - _GroundMask:
         m_Texture: {fileID: 0}
         m_Scale: {x: 1, y: 1}
         m_Offset: {x: 0, y: 0}
+    - _SplatMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
+    - _BlendWidth: 0.06
     - _Smoothness: 0
     m_Colors:
-    - _Tiling: {r: 0.25, g: 0.25, b: 0, a: 0}
+    - _DirtTiling: {r: 0.25, g: 0.5, b: 0, a: 0}
+    - _GrassTiling: {r: 0.25, g: 0.5, b: 0, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
 --- !u!114 &1638820402564753335

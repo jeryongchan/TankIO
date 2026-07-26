@@ -646,8 +646,8 @@ Camera:
   m_GameObject: {fileID: 330585543}
   m_Enabled: 1
   serializedVersion: 2
-  m_ClearFlags: 1
-  m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
+  m_ClearFlags: 2
+  m_BackGroundColor: {r: 0, g: 0, b: 0, a: 0}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
   m_FOVAxisMode: 0
@@ -796,7 +796,7 @@ Light:
   serializedVersion: 13
   m_Type: 1
   m_Color: {r: 1, g: 1, b: 1, a: 1}
-  m_Intensity: 2
+  m_Intensity: 0.88
   m_Range: 10
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
@@ -840,7 +840,7 @@ Light:
   m_AreaSize: {x: 1, y: 1}
   m_BounceIntensity: 1
   m_ColorTemperature: 5000
-  m_UseColorTemperature: 1
+  m_UseColorTemperature: 0
   m_BoundingSphereOverride: {x: 0, y: 0, z: 0, w: 0}
   m_UseBoundingSphereOverride: 0
   m_UseViewFrustumForShadowCasterCull: 1
@@ -2385,6 +2385,7 @@ GameObject:
   - component: {fileID: 1942536066}
   - component: {fileID: 1942536065}
   - component: {fileID: 1942536067}
+  - component: {fileID: 1942536068}
   m_Layer: 0
   m_Name: TileGrid
   m_TagString: Untagged
@@ -2489,7 +2490,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: eb04bc0c55b03c84a9acd1ad3552d7b3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TankIO.TileGrid
-  treeSeed: 1
+  groundSeed: 1
+  patchScale: 0.1
+  grassCoverage: 0.4
+  treeSeed: 2
   treeDensity: 0.1
   trunkRadius: 0.25
   width: 200
@@ -2511,8 +2515,33 @@ MonoBehaviour:
   treePrefabs:
   - {fileID: 299712424454941021, guid: 022485ff60e4a26418217d8ab778a812, type: 3}
   - {fileID: 5400752399725384465, guid: af90fe2f0f252bf4b8c2ab79bcd41edf, type: 3}
-  positionJitter: 0.1
+  positionJitter: 0.3
   scaleJitter: 0.1
+  regionSize: 16
+  iconMaterial: {fileID: 2100000, guid: 7c3e91b2a5d84f06b9e1d2c4a6f80315, type: 2}
+  iconScale: 1.5
+--- !u!114 &1942536068
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1942536059}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bb4714e58b399e548bd194321597437f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::TankIO.GrassRenderer
+  grassPrefab: {fileID: 8033372201027402346, guid: ff7bee0edbb9b3240aad8a73fe38a0e9, type: 3}
+  chunksPerTile: 30
+  maxChunks: 1000000
+  grassSeed: 1
+  positionJitter: 0.5
+  scaleJitter: 0.15
+  regionSize: 16
+  plantCutoff: 0.55
+  edgeFade: 0.1
+  edgeMinScale: 0.4
 --- !u!1 &1945955271
 GameObject:
   m_ObjectHideFlags: 0

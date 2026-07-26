@@ -36,6 +36,10 @@ namespace TankIO
             {
                 float centreCol = rng.NextFloat() * width;
                 float centreRow = rng.NextFloat() * height;
+                // forests grow on grass patches: reject centres on dirt. 0.5 is the same
+                // cutoff the shader's smoothstep blends around, so trees match the visual.
+                if (GrassWeight(new Vector2Int((int)centreCol, (int)centreRow)) < 0.5f)
+                    continue;
                 int trees = rng.NextInt(minTrees, maxTrees + 1);
                 // we deduce the required radius based on how many trees we need in this patch.
                 float radius = Mathf.Sqrt(trees / (Mathf.PI * packing)); // packing need to be tuned, approaches 1.0 density at large number.
@@ -47,7 +51,8 @@ namespace TankIO
                         Mathf.FloorToInt(centreCol + Mathf.Cos(angle) * distance),
                         Mathf.FloorToInt(centreRow + Mathf.Sin(angle) * distance)
                     );
-                    if (!IsInsideGrid(tile) || !tiles[tile.x, tile.y].Walkable)
+                    if (!IsInsideGrid(tile) || !tiles[tile.x, tile.y].Walkable
+                        || GrassWeight(tile) < 0.5f)
                         continue;
                     tiles[tile.x, tile.y].HasTree = true;
                     tiles[tile.x, tile.y].Walkable = false;

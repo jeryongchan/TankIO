@@ -77,6 +77,7 @@ namespace TankIO
 
         void BuildTiles()
         {
+            FindGrassCutoff(); // before PlantTrees: it reads GrassWeight to keep forests off dirt
             tiles = new TileData[width, height];
             int groundCount = 0;
             for (int row = 0; row < height; row++)

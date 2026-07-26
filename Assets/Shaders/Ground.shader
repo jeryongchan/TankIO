@@ -6,8 +6,14 @@ Shader "TankIO/Ground"
     Properties
     {
         [NoScaleOffset] _GroundMask("Ground mask (R)", 2D) = "white" {}
-        [NoScaleOffset] _Albedo("Albedo", 2D) = "white" {}
-        _Tiling("Tiling (repeats per world unit)", Vector) = (0.25, 0.25, 0, 0)
+        [NoScaleOffset] _SplatMap("Splat map (R: grass weight)", 2D) = "black" {}
+        [NoScaleOffset] _GrassAlbedo("Grass albedo", 2D) = "white" {}
+        [NoScaleOffset] _DirtAlbedo("Dirt albedo", 2D) = "gray" {}
+        _GrassTiling("Grass tiling (repeats per world unit)", Vector) = (0.25, 0.25, 0, 0)
+        // Ground081 is 2048x1024: one repeat spans 1/tiling world units, so x stays half of y
+        // and the repeat covers a 2:1-wide footprint matching the texture (SOURCES.txt).
+        _DirtTiling("Dirt tiling (repeats per world unit)", Vector) = (0.125, 0.25, 0, 0)
+        _BlendWidth("Grass/dirt blend width", Range(0.01, 0.5)) = 0.05
         _Smoothness("Smoothness", Range(0, 1)) = 0
     }
 
@@ -19,12 +25,16 @@ Shader "TankIO/Ground"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
         CBUFFER_START(UnityPerMaterial)
-            float4 _Tiling;
+            float4 _GrassTiling;
+            float4 _DirtTiling;
+            float _BlendWidth;
             float _Smoothness;
         CBUFFER_END
 
-        TEXTURE2D(_GroundMask);  SAMPLER(sampler_GroundMask);
-        TEXTURE2D(_Albedo);      SAMPLER(sampler_Albedo);
+        TEXTURE2D(_GroundMask);   SAMPLER(sampler_GroundMask);
+        TEXTURE2D(_SplatMap);     SAMPLER(sampler_SplatMap);
+        TEXTURE2D(_GrassAlbedo);  SAMPLER(sampler_GrassAlbedo);
+        TEXTURE2D(_DirtAlbedo);   SAMPLER(sampler_DirtAlbedo);
 
         // the mask is one texel per tile with no mip chain, so a texel is either ground or void.
         void ClipToGround(float2 uv)
@@ -43,6 +53,9 @@ Shader "TankIO/Ground"
             #pragma fragment Frag
             #pragma target 3.0
 
+            // forward+ never fills the per-object light data the classic path multiplies by,
+            // so without this keyword the main light contributes zero.
+            #pragma multi_compile _ _CLUSTER_LIGHT_LOOP
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile_fragment _ _SHADOWS_SOFT
             #pragma multi_compile_fog
@@ -82,8 +95,16 @@ Shader "TankIO/Ground"
             {
                 ClipToGround(IN.uv);
 
-                float2 albedoUV = IN.positionWS.xz * _Tiling.xy;
-                half3 albedo = SAMPLE_TEXTURE2D(_Albedo, sampler_Albedo, albedoUV).rgb;
+                // splat by quad uv (covers the map once, per-tile weights); albedos by world
+                // position (tile many times). shape and detail stay independent resolutions.
+                float weight = SAMPLE_TEXTURE2D(_SplatMap, sampler_SplatMap, IN.uv).r;
+                // narrow the transition band: a raw lerp shows both textures at half strength
+                // over the whole gradient and reads as fog, not a border.
+                weight = smoothstep(0.5 - _BlendWidth, 0.5 + _BlendWidth, weight);
+
+                half3 grass = SAMPLE_TEXTURE2D(_GrassAlbedo, sampler_GrassAlbedo, IN.positionWS.xz * _GrassTiling.xy).rgb;
+                half3 dirt = SAMPLE_TEXTURE2D(_DirtAlbedo, sampler_DirtAlbedo, IN.positionWS.xz * _DirtTiling.xy).rgb;
+                half3 albedo = lerp(dirt, grass, weight);
 
                 InputData inputData = (InputData)0;
                 inputData.positionWS = IN.positionWS;

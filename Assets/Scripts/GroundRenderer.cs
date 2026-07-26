@@ -2,10 +2,6 @@ using UnityEngine;
 
 namespace TankIO
 {
-    // one quad spanning the whole grid, plus an R8 mask holding one texel per tile. the shader
-    // clips the texels outside the disc, so the silhouette is a texture lookup instead of geometry.
-    // the previous build emitted four verts per ground tile: 3.14M verts for a plane whose every
-    // vertex was y=0 and every normal was up. the silhouette was the only thing that bought.
     [ExecuteAlways]
     [RequireComponent(typeof(TileGrid), typeof(MeshFilter), typeof(MeshRenderer))]
     public class GroundRenderer : MonoBehaviour
@@ -15,9 +11,10 @@ namespace TankIO
         private MeshRenderer meshRenderer;
         private Mesh groundMesh;
         private Texture2D groundMask;
+        private Texture2D splatMap;
         private MaterialPropertyBlock properties;
-
         private static readonly int GroundMaskId = Shader.PropertyToID("_GroundMask");
+        private static readonly int SplatMapId = Shader.PropertyToID("_SplatMap");
 
         void OnEnable()
         {
@@ -35,12 +32,15 @@ namespace TankIO
                 DestroyImmediate(groundMesh);
             if (groundMask != null)
                 DestroyImmediate(groundMask);
+            if (splatMap != null)
+                DestroyImmediate(splatMap);
         }
 
         void Rebuild()
         {
             BuildQuad();
             BuildGroundMask();
+            BuildSplatMap();
         }
 
         void BuildQuad()
@@ -70,7 +70,6 @@ namespace TankIO
             };
 
             var normals = new Vector3[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up };
-
             // w = -1 puts the bitangent along +Z, matching uv.y. without tangents the normal maps
             // would light from an arbitrary direction.
             var tangent = new Vector4(1f, 0f, 0f, -1f);
@@ -93,13 +92,11 @@ namespace TankIO
         {
             int w = tileGrid.Width;
             int h = tileGrid.Height;
-
             if (groundMask != null && (groundMask.width != w || groundMask.height != h))
             {
                 DestroyImmediate(groundMask);
                 groundMask = null;
             }
-
             if (groundMask == null)
             {
                 // no mip chain: a mip would average ground against void and eat the rim.
@@ -110,7 +107,6 @@ namespace TankIO
                     wrapMode = TextureWrapMode.Clamp,
                 };
             }
-
             // nearest texel: the rim keeps its square tile edges instead of blending into a curve
             groundMask.filterMode = FilterMode.Point;
 
@@ -121,7 +117,6 @@ namespace TankIO
                 for (int col = 0; col < w; col++)
                     texels[rowStart + col] = tileGrid.IsGround(new Vector2Int(col, row)) ? (byte)255 : (byte)0;
             }
-
             groundMask.SetPixelData(texels, 0);
             groundMask.Apply(false, false);
             // a property block rather than the shared material: the mask is generated per scene and
@@ -130,6 +125,43 @@ namespace TankIO
                 properties = new MaterialPropertyBlock();
             meshRenderer.GetPropertyBlock(properties);
             properties.SetTexture(GroundMaskId, groundMask);
+            meshRenderer.SetPropertyBlock(properties);
+        }
+
+        void BuildSplatMap()
+        {
+            int w = tileGrid.Width;
+            int h = tileGrid.Height;
+            if (splatMap != null && (splatMap.width != w || splatMap.height != h))
+            {
+                DestroyImmediate(splatMap);
+                splatMap = null;
+            }
+            if (splatMap == null)
+            {
+                splatMap = new Texture2D(w, h, TextureFormat.R8, false, true)
+                {
+                    name = "GroundSplat",
+                    hideFlags = HideFlags.DontSave,
+                    wrapMode = TextureWrapMode.Clamp,
+                    // bilinear, unlike the mask: the grass/dirt border blends between tiles.
+                    // the disc rim stays crisp because only the mask clips.
+                    filterMode = FilterMode.Bilinear,
+                };
+            }
+            var texels = new byte[w * h];
+            for (int row = 0; row < h; row++)
+            {
+                int rowStart = row * w;
+                for (int col = 0; col < w; col++)
+                    texels[rowStart + col] = (byte)(tileGrid.GrassWeight(new Vector2Int(col, row)) * 255f);
+            }
+            splatMap.SetPixelData(texels, 0);
+            splatMap.Apply(false, false);
+            if (properties == null)
+                properties = new MaterialPropertyBlock();
+            meshRenderer.GetPropertyBlock(properties);
+            properties.SetTexture(SplatMapId, splatMap);
             meshRenderer.SetPropertyBlock(properties);
         }
     }
