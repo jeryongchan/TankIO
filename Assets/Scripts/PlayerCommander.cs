@@ -9,17 +9,23 @@ namespace TankIO
     // selection is never replicated: the server only knows each tank's command, not which tanks were selected together.
     public class PlayerCommander : MonoBehaviour
     {
-        private const float DragThresholdPixels = 8f; // below this a press and release is a click, not a box
-        private const float BoxBorderThickness = 2f;
+        private const float DragThresholdPixels = 64f; // below this a press and release is a click, not a box
+        private const float BoxBorderThickness = 3f;
 
         private readonly List<TankController> selection = new List<TankController>();
         private HqController selectedHq; // never selected together with tanks: picking either deselects the other
+        private bool placingHq; // a [Move] press is waiting for its ground click
+
+        // the last enemy clicked, held only so its health bar draws. one at a time, and never both at once.
+        private TankController inspectedTank;
+        private HqController inspectedHq;
         private readonly Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
         private Camera mainCamera;
 
         private bool dragging;
         private Vector2 dragStartScreenPosition;
         private Vector2 dragCurrentScreenPosition;
+        private Vector2 rightPressScreenPosition; // where a pan began, to tell a cancel from a camera drag
 
         public static PlayerCommander Instance { get; private set; } // the tank strip routes slot clicks here
 
@@ -51,6 +57,16 @@ namespace TankIO
                 return;
             Vector2 mousePosition = mouse.position.ReadValue();
 
+            // right click cancels the placement, right drag pans the camera. both are the same button, so this
+            // waits for the release and only cancels if the cursor never moved past the drag threshold.
+            if (mouse.rightButton.wasPressedThisFrame)
+                rightPressScreenPosition = mousePosition;
+            else if (
+                mouse.rightButton.wasReleasedThisFrame
+                && !IsDragPastThreshold(rightPressScreenPosition, mousePosition)
+            )
+                placingHq = false;
+
             if (mouse.leftButton.wasPressedThisFrame)
             {
                 if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
@@ -69,7 +85,7 @@ namespace TankIO
                 return; // the press landed on the strip, so the release is not ours either
             dragging = false;
             RemoveDestroyedTanks();
-            if (IsDragPastThreshold(mousePosition))
+            if (IsDragPastThreshold(dragStartScreenPosition, mousePosition))
                 SelectInsideBox(dragStartScreenPosition, mousePosition);
             else
                 HandleClick(mousePosition);
@@ -80,41 +96,64 @@ namespace TankIO
             UpdateHqMovePreview();
         }
 
-        // the confirm flow is hover-shows-cost, click-commits: the preview is the only UI the move needs
+        // hover shows the cost, the click pays it. which tiles are blocked is HqMovePreview's job,
+        // so this label only ever shows the cost and whether you can afford it.
         void UpdateHqMovePreview()
         {
             HudCursorLabel.Hide();
-            if (selectedHq == null || Mouse.current == null)
+            HqController hq = PlacingHq;
+            if (hq == null || !TryGetPlacementTile(out Vector2Int tile))
                 return;
-            Vector2 mousePosition = Mouse.current.position.ReadValue();
-            Ray ray = mainCamera.ScreenPointToRay(mousePosition);
-            if (!groundPlane.Raycast(ray, out float groundDistance))
-                return;
-            if (!TileGrid.Instance.WorldToTile(ray.GetPoint(groundDistance), out Vector2Int tile))
-                return;
-            tile = CapitalController.SnapToDock(tile); // preview the tile the confirm will actually use
-
             double now = NetworkManager.Singleton.ServerTime.Time;
-            if (!selectedHq.IsParked(now))
-                HudCursorLabel.Show("in transit", Color.red, mousePosition);
-            else if (!selectedHq.IsValidDestination(tile))
-                HudCursorLabel.Show("blocked", Color.red, mousePosition);
-            else
+            if (!hq.IsParked(now))
             {
-                float cost = HqController.MoveCost(selectedHq.HomeTile, tile);
-                bool affordable = selectedHq.Gold(now) >= cost;
-                HudCursorLabel.Show($"move: {cost:0} gold", affordable ? Color.green : Color.red, mousePosition);
+                placingHq = false; // a knockback can send the base moving while you are placing it
+                return;
             }
+            Vector2 mousePosition = Mouse.current.position.ReadValue();
+            if (!hq.IsValidDestination(tile))
+            {
+                HudCursorLabel.Show("blocked", Color.red, mousePosition);
+                return;
+            }
+            float cost = HqController.MoveCost(hq.HomeTile, tile);
+            bool affordable = hq.Gold(now) >= cost;
+            HudCursorLabel.Show($"move: {cost:0} gold", affordable ? Color.green : Color.red, mousePosition);
         }
 
-        bool IsDragPastThreshold(Vector2 endScreenPosition) // only count as drag once past threshold
+        // the tile a placement click would land on: the ground under the cursor, snapped onto the
+        // capital's dock. shared by the label, the footprint preview and the click, so they cannot disagree.
+        public bool TryGetPlacementTile(out Vector2Int tile)
         {
-            return (endScreenPosition - dragStartScreenPosition).magnitude > DragThresholdPixels;
+            tile = default;
+            if (Mouse.current == null)
+                return false;
+            Ray ray = mainCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
+            if (!groundPlane.Raycast(ray, out float groundDistance))
+                return false;
+            if (!TileGrid.Instance.WorldToTile(ray.GetPoint(groundDistance), out tile))
+                return false;
+            tile = CapitalController.SnapToDock(tile);
+            return true;
+        }
+
+        // only count as a drag once past threshold; both buttons ask it, one to tell a box from a
+        // click, the other to tell a pan from a cancel
+        static bool IsDragPastThreshold(Vector2 pressPosition, Vector2 currentPosition)
+        {
+            return (currentPosition - pressPosition).magnitude > DragThresholdPixels;
         }
 
         void HandleClick(Vector2 screenPosition)
         {
             Ray ray = mainCamera.ScreenPointToRay(screenPosition);
+            ClearInspection(); // any click drops the last one; the enemy branches below set the new one
+
+            if (PlacingHq != null)
+            {
+                PlaceHq();
+                return; // dropping a base onto an enemy tank must not also order an attack on it
+            }
 
             Keyboard keyboard = Keyboard.current;
             if (keyboard != null && keyboard.ctrlKey.isPressed) // force fire (debug)
@@ -137,6 +176,7 @@ namespace TankIO
                 }
                 else
                 {
+                    Inspect(clickedTank, null);
                     foreach (TankController tank in selection)
                         tank.Attack(clickedTank);
                 }
@@ -158,10 +198,12 @@ namespace TankIO
                     {
                         DeselectAll();
                         selectedHq = clickedHq;
+                        selectedHq.SetSelected(true);
                     }
                 }
                 else
                 {
+                    Inspect(null, clickedHq);
                     foreach (TankController tank in selection)
                         tank.Attack(clickedHq); // siege: same standing order as attacking a tank
                 }
@@ -181,7 +223,7 @@ namespace TankIO
             }
             if (selectedHq != null)
             {
-                selectedHq.RequestMove(CapitalController.SnapToDock(goal)); // hover already showed the cost; this click is the confirm
+                DeselectAll(); // clicking away deselects a building, same as RA2; only [Move] relocates it
                 return;
             }
             // alt+click ground: attack-move. alt+click on a tank or HQ already fell through to the plain attack above.
@@ -265,12 +307,68 @@ namespace TankIO
             AddToSelection(tank);
         }
 
+        // the [Move] button routes here; the next ground click is the placement
+        public void BeginPlacingHq()
+        {
+            if (selectedHq != null)
+                placingHq = true;
+        }
+
+        public HqController SelectedHq
+        {
+            get { return selectedHq; }
+        }
+
+        // non-null while a placement is waiting for its click; the footprint preview draws from this
+        public HqController PlacingHq
+        {
+            get { return placingHq ? selectedHq : null; }
+        }
+
+        // an illegal or unaffordable spot is ignored rather than cancelling, so a misclick does not
+        // cost the button press; right-click or escape is the cancel
+        void PlaceHq()
+        {
+            if (!TryGetPlacementTile(out Vector2Int tile))
+                return;
+            if (!selectedHq.CanMoveTo(tile, NetworkManager.Singleton.ServerTime.Time))
+                return; // the same gates the server will apply, asked early so the click is not silently dropped
+            selectedHq.RequestMove(tile);
+            placingHq = false;
+        }
+
         void DeselectAll()
         {
             foreach (TankController tank in selection)
                 tank.SetSelected(false);
             selection.Clear();
+            if (selectedHq != null)
+                selectedHq.SetSelected(false);
             selectedHq = null;
+            placingHq = false; // nothing to place once the HQ is deselected
+            ClearInspection(); // escape reaches here without passing through HandleClick
+        }
+
+        void Inspect(TankController tank, HqController hq)
+        {
+            ClearInspection();
+            inspectedTank = tank;
+            inspectedHq = hq;
+            if (inspectedTank != null)
+                inspectedTank.SetInspected(true);
+            if (inspectedHq != null)
+                inspectedHq.SetInspected(true);
+        }
+
+        // the Unity null check covers a target that despawned while inspected; its flag went with it
+        void ClearInspection()
+        {
+            if (inspectedTank != null)
+                inspectedTank.SetInspected(false);
+            if (inspectedHq != null)
+                inspectedHq.SetInspected(false);
+            inspectedTank = null;
+            inspectedHq = null;
         }
 
         // a selected tank can be destroyed while it is still selected
@@ -307,7 +405,7 @@ namespace TankIO
         // the drag box stays IMGUI: four stretched textures, no interaction, nothing a canvas would improve
         void OnGUI()
         {
-            if (!dragging || !IsDragPastThreshold(dragCurrentScreenPosition))
+            if (!dragging || !IsDragPastThreshold(dragStartScreenPosition, dragCurrentScreenPosition))
                 return;
             // GUI space runs y down from the top, the mouse runs y up from the bottom
             Vector2 start = new Vector2(dragStartScreenPosition.x, Screen.height - dragStartScreenPosition.y);

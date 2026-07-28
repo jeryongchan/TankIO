@@ -121,8 +121,10 @@ namespace TankIO
                 // closest approach of the line to the trunk, clamped to the segment for shots that end short of it.
                 // the Max guards the zero-length segment against dividing by zero.
                 var trunk = new Vector2(col + 0.5f, row + 0.5f);
-                float closest = Mathf.Clamp01(
-                    Vector2.Dot(trunk - start, displacement) / Mathf.Max(displacement.sqrMagnitude, 1e-12f)
+                float closest = Mathf.Clamp(
+                    Vector2.Dot(trunk - start, displacement) / Mathf.Max(displacement.sqrMagnitude, 1e-12f),
+                    0f,
+                    1f
                 );
                 if ((start + displacement * closest - trunk).sqrMagnitude > trunkRadius * trunkRadius)
                     continue; // passes wide of this trunk; a later tree may still stand in the way

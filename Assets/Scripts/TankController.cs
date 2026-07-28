@@ -67,9 +67,10 @@ namespace TankIO
         private const int MaxHealth = 100;
         private readonly NetworkVariable<int> health = new NetworkVariable<int>(MaxHealth);
 
-        // the troops this tank carries: its power, not its survivability. damage scales with them; health
-        // does not, which is what keeps the wounded-tank rotation play alive (a hurt tank still hits full).
-        private readonly NetworkVariable<int> troops = new NetworkVariable<int>(HqController.TroopsPerTank);
+        private readonly NetworkVariable<int> deployedTroops = new NetworkVariable<int>(HqController.TroopsPerTank);
+
+        private const float TroopLossAtZeroHealth = 0.25f; // tank health 100% to 0% > troop count 100% > 75%; see below
+        private const float TroopLossOnDeath = 0.25f; //when tank dies at 0%, troop count drop further from 75% to 50%
         private bool debugFreeTank; // server only: took no troops from the pool, so death returns none
 
         // set by the deploy path before Spawn, so it rides the spawn payload and is never 0 on any machine
@@ -269,14 +270,19 @@ namespace TankIO
             SubmitAttackMoveCommandRpc(goal, lastIssuedCommandId);
         }
 
+        // clamped because an overkill hit sends health.Value negative
         public float HealthFraction
         {
-            get { return (float)health.Value / MaxHealth; }
+            get { return Mathf.Clamp((float)health.Value / MaxHealth, 0f, 1f); }
         }
 
         public int Troops
         {
-            get { return troops.Value; }
+            get
+            {
+                float lost = TroopLossAtZeroHealth * (1f - HealthFraction);
+                return Mathf.RoundToInt(deployedTroops.Value * (1f - lost));
+            }
         }
 
         public Vector3 DrawnPosition
@@ -294,16 +300,18 @@ namespace TankIO
             get { return true; }
         }
 
-        // damage scales with troops, never below 1 so an emptied tank still plinks
+        // damage follows the live count, so a hurt tank does less damage: 10 at full health, 8 at the brink.
+        // this is the tradeoff for showing troops on the health bar - the number now moves as the bar does.
+        // never below 1, or a deploy that only found a few troops would do nothing at all.
         int ScaledDamage
         {
-            get { return Math.Max(1, Mathf.RoundToInt(Damage * (troops.Value / (float)HqController.TroopsPerTank))); }
+            get { return Math.Max(1, Mathf.RoundToInt(Damage * (Troops / (float)HqController.TroopsPerTank))); }
         }
 
         // the deploy path stamps what the tank carries; a debug tank took nothing and returns nothing
         public void ServerInitializeTroops(int troopCount, bool isDebugFree)
         {
-            troops.Value = troopCount;
+            deployedTroops.Value = troopCount;
             debugFreeTank = isDebugFree;
         }
 
@@ -314,12 +322,19 @@ namespace TankIO
             commanderId.Value = id;
         }
 
-        // the health bar doubles as the selection marker: WorldHealthBars draws it only while this is set
         public bool IsSelected { get; private set; }
 
         public void SetSelected(bool selected)
         {
             IsSelected = selected;
+        }
+
+        // clicking an enemy issues an attack and inspect it.
+        public bool IsInspected { get; private set; }
+
+        public void SetInspected(bool inspected)
+        {
+            IsInspected = inspected;
         }
 
         // the tank chases the target into range, then fires. the owner predicts the initial approach.
@@ -651,9 +666,8 @@ namespace TankIO
 
             if (arrived && besideFootprint)
             {
-                // home: every troop climbs out and the tank stops existing. no wreck, no partial loss.
                 if (!debugFreeTank)
-                    hq.ReturnTroops(troops.Value, troops.Value);
+                    hq.ReturnTroops(Troops, deployedTroops.Value);
                 NetworkObject.Despawn();
                 return;
             }
@@ -832,9 +846,8 @@ namespace TankIO
                 Die();
         }
 
-        // the tank leaves combat instantly; half its troops die, the survivors drive home as a wreck
-        // whose travel time is the redeploy cooldown - die deep, wait long. the server queues the troops
-        // to come back at the wreck's arrival; the wreck itself is a local visual on every machine.
+        // the tank leaves combat instantly; a last 25% of troops die here, the survivors drive home as a wreck. 
+        // the wreck itself is a local visual on every machine.
         void Die()
         {
             if (!debugFreeTank)
@@ -846,7 +859,9 @@ namespace TankIO
                     Vector3 deathPosition = PositionAtTime(serverTrip, now);
                     Vector3 homePosition = TileGrid.Instance.TileToWorldCenter(hq.HomeTile);
                     homePosition.y = deathPosition.y; // drive level at tank height, same line the visuals fly
-                    hq.QueueWreckReturn(troops.Value / 2, troops.Value, deathPosition, homePosition, now);
+                    // health is already 0 or below, so Troops has already lost its 25%; this takes the rest
+                    int survivors = Troops - Mathf.RoundToInt(deployedTroops.Value * TroopLossOnDeath);
+                    hq.QueueWreckReturn(survivors, deployedTroops.Value, deathPosition, homePosition, now);
                     WreckRetreatRpc(deathPosition, homePosition, now); // before the despawn, like the impact event
                 }
             }

@@ -13,7 +13,6 @@ namespace TankIO
     {
         private const float PackSeconds = 1f;
         private const float TravelSpeed = 2f; // metres per second, straight glide; ignores terrain (the traveling HQ is a non-entity)
-        private const float TransitScale = 0.55f; // stand-in for the pack animation: the packed vehicle is smaller than the building
 
         // placeholder pricing, moves get expensive toward the centre
         private const float MoveCostPerTile = 5f;
@@ -65,9 +64,11 @@ namespace TankIO
 
         private bool arrivalApplied;
 
-        private Vector3 authoredScale; // the prefab's scale; the transit shrink multiplies it instead of replacing it
-        private Renderer[] renderers;
-        private bool visible = true;
+        [SerializeField]
+        private GameObject buildingBody; // the deployed base
+
+        [SerializeField]
+        private GameObject packedBody; // the vehicle it becomes mid-move; authored facing +Z so LookRotation can aim it
 
         [SerializeField]
         private Material ownIconMaterial; // the Mid square and Far dot, colored by who commands the HQ
@@ -130,16 +131,18 @@ namespace TankIO
         {
             double now = NetworkManager.ServerTime.Time;
             targetTile = CapitalController.SnapToDock(targetTile); // the client snapped for its preview; the server owns the decision
-            if (!IsParked(now))
-                return; // no cancel, no queue: nothing new until the move in progress lands
-            if (!IsValidDestination(targetTile))
+            if (!CanMoveTo(targetTile, now))
                 return;
-            float cost = MoveCost(HomeTile, targetTile);
-            if (Gold(now) < cost)
-                return;
-
-            Spend(cost, now);
+            Spend(MoveCost(HomeTile, targetTile), now);
             BeginMove(targetTile, now + PackSeconds, TravelSpeed, now);
+        }
+
+        // every check a move must pass. PlaceHq calls this on the client too, so a click the server
+        // would drop is dropped locally instead of looking like nothing happened. this call is still
+        // the one that decides: no cancel, no queue, nothing new until the move in progress lands.
+        public bool CanMoveTo(Vector2Int tile, double now)
+        {
+            return IsParked(now) && IsValidDestination(tile) && Gold(now) >= MoveCost(HomeTile, tile);
         }
 
         void BeginMove(Vector2Int toTile, double departTime, float glideSpeed, double now)
@@ -173,15 +176,30 @@ namespace TankIO
         {
             bool inTransit = state.InTransitAt(now);
             transform.position = state.PositionAtTime(now);
-            transform.localScale = authoredScale * (inTransit ? TransitScale : 1f);
             bool docked = IsDockedAtCapital(now);
             LodTier lod = CameraController.Lod;
-            SetVisible(!docked && lod == LodTier.Near);
+            bool drawBody = !docked && lod == LodTier.Near;
+            buildingBody.SetActive(drawBody && !inTransit);
+            packedBody.SetActive(drawBody && inTransit);
+            if (drawBody && inTransit)
+                packedBody.transform.rotation = HeadingRotation(state);
             midIcon.enabled = !docked && lod == LodTier.Mid;
             farIcon.enabled = !docked && lod == LodTier.Far;
 #if !UNITY_SERVER
             RenderGarrisonTracer(); // purely visual: spare the dedicated server the tracer objects
 #endif
+        }
+
+        // the glide is one straight line, so a move has a single heading for its whole duration.
+        // the identity fallback covers the spawn state, whose two tiles are equal - LookRotation
+        // logs an error on a zero vector rather than returning anything usable
+        static Quaternion HeadingRotation(MoveState state)
+        {
+            Vector3 heading =
+                TileGrid.Instance.TileToWorldCenter(state.ToTile)
+                - TileGrid.Instance.TileToWorldCenter(state.FromTile);
+            heading.y = 0f;
+            return heading.sqrMagnitude > 0f ? Quaternion.LookRotation(heading) : Quaternion.identity;
         }
 
         // packed HQ vanish into capital and dock there.
@@ -191,15 +209,6 @@ namespace TankIO
             return CapitalController.Instance != null
                 && IsParked(now)
                 && HomeTile == CapitalController.Instance.CenterTile;
-        }
-
-        void SetVisible(bool shouldBeVisible)
-        {
-            if (visible == shouldBeVisible)
-                return;
-            visible = shouldBeVisible;
-            foreach (Renderer meshRenderer in renderers)
-                meshRenderer.enabled = shouldBeVisible;
         }
 
         public bool IsParked(double now)
@@ -216,7 +225,14 @@ namespace TankIO
         // the commander's hover preview asks the same question the server's confirm will
         public bool IsValidDestination(Vector2Int tile)
         {
-            return tile != HomeTile && CapitalController.AllowsHqAt(tile) && IsFootprintFree(tile, NetworkObjectId);
+            return AllowsPlacementAt(tile) && IsFootprintFree(tile, NetworkObjectId);
+        }
+
+        // the half of IsValidDestination that is about the whole 3x3 rather than any one tile, so the
+        // preview cannot colour a single tile red for it and turns all 9 red instead
+        public bool AllowsPlacementAt(Vector2Int tile)
+        {
+            return tile != HomeTile && CapitalController.AllowsHqAt(tile);
         }
 
         // gets more expensive to move as you get deeper, squared. retreating is cheap

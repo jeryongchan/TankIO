@@ -36,6 +36,9 @@ namespace TankIO
         private float farTierZoom = 30f; // zoom past which only HQ dots remain
 
         [SerializeField]
+        private float overlayReferenceZoom = 8f; // the zoom screen-space overlays are authored to look right at
+
+        [SerializeField]
         private TileGrid tileGrid;
 
         // world-space map bounds, pulled from the grid in RefreshClampLimits
@@ -53,6 +56,32 @@ namespace TankIO
         public static CameraController Instance { get; private set; }
 
         public static LodTier Lod { get; private set; }
+
+        // health bars, badges and the HQ buttons all read this so they scale with camera zoom (dont retain size).
+        public static float OverlayScale
+        {
+            get
+            {
+                if (Instance == null || Instance.cam == null)
+                    return 1f;
+                return Instance.overlayReferenceZoom / Instance.cam.orthographicSize;
+            }
+        }
+
+        // place a screen-space overlay over a world point, at the scale the others are using.
+        // returns false when there is nowhere to put it, and the caller turns its overlay off.
+        public static bool TryPin(Transform overlay, Vector3 worldPosition)
+        {
+            Camera mainCamera = Camera.main;
+            if (mainCamera == null)
+                return false;
+            Vector3 screen = mainCamera.WorldToScreenPoint(worldPosition);
+            if (screen.z <= 0f)
+                return false; // behind the camera
+            overlay.position = new Vector3(screen.x, screen.y, 0f);
+            overlay.localScale = Vector3.one * OverlayScale;
+            return true;
+        }
 
         private const float CameraDistance = 1000f; // so wont clip into large grid
 

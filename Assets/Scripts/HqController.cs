@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -24,6 +25,8 @@ namespace TankIO
         private const int DeploySpawnSearchRadius = 4; // rings around the HQ searched for a free spawn tile
 
         public const int MaxHqHealth = 500;
+
+        public const float HqRegenPerSecond = 2f;
         private const float HqHitRadius = 1.5f; // half the 3-tile footprint width; the corners it undercuts are imperceptible
 
         private const int KnockbackTiles = 4; // rings toward the edge a destroyed HQ is thrown
@@ -76,9 +79,24 @@ namespace TankIO
         // a human's client id, or a bot's assigned id; every tank this HQ deploys inherits it.
         private readonly NetworkVariable<ulong> commanderId = new NetworkVariable<ulong>();
 
+        // FixedString and not string, because NGO cannot serialize a managed reference
+        private readonly NetworkVariable<FixedString32Bytes> displayName = new NetworkVariable<FixedString32Bytes>();
+
         public ulong CommanderId
         {
             get { return commanderId.Value; }
+        }
+
+        public string DisplayName
+        {
+            get { return displayName.Value.ToString(); }
+        }
+
+        // Looks up a commander's display name through their HQ
+        public static string DisplayNameFor(ulong commanderId)
+        {
+            HqController hq = ForCommander(commanderId);
+            return hq != null ? hq.DisplayName : "";
         }
 
         // true only on the commanding player's own screen; other players' and every bot's read false
@@ -92,6 +110,22 @@ namespace TankIO
         public void ServerSetCommanderBeforeSpawn(ulong id)
         {
             commanderId.Value = id;
+            displayName.Value = CommanderNames.Generate(id);
+        }
+
+        // client-only, never replicated
+        public bool IsSelected { get; private set; }
+
+        public void SetSelected(bool selected)
+        {
+            IsSelected = selected;
+        }
+
+        public bool IsInspected { get; private set; }
+
+        public void SetInspected(bool inspected)
+        {
+            IsInspected = inspected;
         }
 
         // the wreck's drive as the server tracks it. the full line is kept, not just ArriveTime, so an
@@ -134,9 +168,6 @@ namespace TankIO
         public override void OnNetworkSpawn()
         {
             replicatedMoveState.OnValueChanged += OnMoveStateChanged;
-            authoredScale = transform.localScale;
-            // the icons are children, so they land in here too; Render writes them after SetVisible and wins
-            renderers = GetComponentsInChildren<Renderer>();
 #if !UNITY_SERVER
             Material iconMaterial = CommandedByLocalPlayer ? ownIconMaterial : enemyIconMaterial;
             midIcon.sharedMaterial = iconMaterial;
@@ -440,8 +471,10 @@ namespace TankIO
         {
             MarkAggressor(attackerCommanderId);
             ShellImpactRpc(shellId, hitFraction); // before a possible knockback state change, like the tank's ordering rule
-            Detail.Health -= damage;
-            if (Detail.Health <= 0)
+            double now = NetworkManager.ServerTime.Time;
+            double remaining = Detail.Health(now) - damage;
+            Detail.ServerSetHealth(remaining, now);
+            if (remaining <= 0)
                 Knockback(attackerCommanderId);
         }
 
@@ -457,7 +490,7 @@ namespace TankIO
         void Knockback(ulong attackerCommanderId)
         {
             double now = NetworkManager.ServerTime.Time;
-            Detail.Health = MaxHqHealth / 2; // respawns viable, not re-killable
+            Detail.ServerSetHealth(MaxHqHealth / 2, now); // reduce hq hp by half
 
             // plunder before the move so the stolen half is measured at the moment of the kill
             double stolen = Gold(now) * 0.5;
@@ -555,8 +588,6 @@ namespace TankIO
             }
         }
 
-        // only permanent bookings block: a parked tank, or another HQ's footprint. tanks merely driving
-        // across are ignored here and rerouted when the claim lands, so their timings never matter.
         // don't rewrite this loop to call FootprintTiles: it would overwrite the list the caller is using.
         public static bool IsFootprintFree(Vector2Int centerTile, ulong ignoredId)
         {
@@ -564,15 +595,22 @@ namespace TankIO
             {
                 for (int y = -FootprintRadius; y <= FootprintRadius; y++)
                 {
-                    Vector2Int tile = centerTile + new Vector2Int(x, y);
-                    if (!TileGrid.Instance.IsWalkable(tile))
-                        return false;
-                    ulong holder = TripReservations.ParkedTankAt(tile);
-                    if (holder != 0 && holder != ignoredId)
+                    if (!IsFootprintTileFree(centerTile + new Vector2Int(x, y), ignoredId))
                         return false;
                 }
             }
             return true;
+        }
+
+        // only permanent bookings block: a parked tank, or another HQ's footprint. tanks merely driving
+        // across are ignored here and rerouted when the claim lands, so their timings never matter.
+        // split out of the loop above so HqMovePreview can colour each of the 9 tiles by the same check
+        public static bool IsFootprintTileFree(Vector2Int tile, ulong ignoredId)
+        {
+            if (!TileGrid.Instance.IsWalkable(tile))
+                return false;
+            ulong holder = TripReservations.ParkedTankAt(tile);
+            return holder == 0 || holder == ignoredId;
         }
 
         public static float GoldRateAt(Vector2Int tile)
@@ -582,9 +620,9 @@ namespace TankIO
 
         // read-only surfaces for the HUD (ResourceHud, WorldHealthBars); every write stays in this class.
         // WorldHealthBars walks the spawned details, so it only asks this of an HQ whose detail it holds.
-        public float HealthFraction
+        public float HealthFraction(double now)
         {
-            get { return Mathf.Clamp01((float)Detail.Health / MaxHqHealth); }
+            return Mathf.Clamp((float)(Detail.Health(now) / MaxHqHealth), 0f, 1f);
         }
 
         public float GoldRatePerSecond

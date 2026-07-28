@@ -61,7 +61,7 @@ namespace TankIO
         public float RingDepth01(Vector2Int tile)
         {
             float distance = (TileCentreOffset(tile) - CenterPoint).magnitude;
-            return Mathf.Clamp01(1f - distance / Radius);
+            return Mathf.Clamp(1f - distance / Radius, 0f, 1f);
         }
 
         static Vector2 TileCentreOffset(Vector2Int tile)

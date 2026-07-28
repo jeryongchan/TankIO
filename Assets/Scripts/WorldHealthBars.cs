@@ -1,89 +1,115 @@
 using System.Collections.Generic;
+using TMPro;
+using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.UI;
 
 namespace TankIO
 {
-    // one pooled overlay for every health bar floating over the world.
-    // HQ bars are walked off the spawned details, so a machine draws them only for the bases it is
-    // watching; the far view keeps the HQs themselves either way.
-    // a tank's bar is also its selection marker, RA2-style, so it draws only while that tank is selected
+    // one pooled set of health bars for every unit and base on screen.
     public class WorldHealthBars : MonoBehaviour
     {
-        private const float HqBarWidth = 60f;
-        private const float HqBarHeight = 6f;
-        private const float HqBarHeightAboveBase = 2.2f;
-        private const float TankBarWidth = 44f;
-        private const float TankBarHeight = 5f;
-        private const float TankBarHeightAboveTank = 1.4f;
+        [SerializeField]
+        private Image barPrefab; // the white outline; its interior holds the fill, and a name label rides along
+
+        // world units, so they have no RectTransform to live in
+        [SerializeField]
+        private float tankBarHeightAboveTank = 1.4f;
 
         [SerializeField]
-        private Image barPrefab; // the background image; its first child is the fill
+        private float hqBarHeightAboveBase = 2.2f;
 
         private readonly List<Image> backgrounds = new List<Image>();
         private readonly List<Image> fills = new List<Image>();
+        private readonly List<TMP_Text> nameLabels = new List<TMP_Text>();
+        private readonly List<TMP_Text> troopLabels = new List<TMP_Text>();
         private int usedBars;
 
         void LateUpdate()
         {
             usedBars = 0;
-            Camera mainCamera = Camera.main;
-            if (mainCamera != null && CameraController.Lod == LodTier.Near)
+            if (CameraController.Lod == LodTier.Near && NetworkManager.Singleton != null)
             {
+                // HomeTroops() computes from a value plus elapsed time, so reading it every frame shows
+                // the count going up even though the server has sent nothing since that base's last deploy
+                double now = NetworkManager.Singleton.ServerTime.Time;
                 foreach (HqDetail hqDetail in HqDetail.Spawned)
                 {
                     HqController hq = hqDetail.Hq;
                     if (hq == null)
                         continue; // the two despawns are separate messages: the HQ's can land a frame first
+                    if (!hq.IsSelected && !hq.IsInspected)
+                        continue;
                     Place(
-                        mainCamera,
-                        hq.transform.position + Vector3.up * HqBarHeightAboveBase,
-                        HqBarWidth,
-                        HqBarHeight,
-                        hq.HealthFraction,
-                        Color.Lerp(Color.red, Color.green, hq.HealthFraction)
+                        hq.transform.position + Vector3.up * hqBarHeightAboveBase,
+                        hq.HealthFraction(now),
+                        FillColor(hq.CommandedByLocalPlayer),
+                        hq.IsInspected ? hq.DisplayName : "",
+                        hq.HomeTroops(now).ToString("0") + " troops"
                     );
                 }
                 foreach (TankController tank in TankController.SpawnedTanks)
                 {
-                    if (tank.IsSelected)
-                        Place(
-                            mainCamera,
-                            tank.transform.position + Vector3.up * TankBarHeightAboveTank,
-                            TankBarWidth,
-                            TankBarHeight,
-                            tank.HealthFraction,
-                            Color.green
-                        );
+                    if (!tank.IsSelected && !tank.IsInspected)
+                        continue;
+                    Place(
+                        tank.transform.position + Vector3.up * tankBarHeightAboveTank,
+                        tank.HealthFraction,
+                        FillColor(tank.CommandedByLocalPlayer),
+                        tank.IsInspected ? HqController.DisplayNameFor(tank.CommanderId) : "",
+                        tank.Troops + " troops" // troops left, which is also what its damage scales with
+                    );
                 }
             }
             for (int index = usedBars; index < backgrounds.Count; index++)
                 backgrounds[index].gameObject.SetActive(false);
         }
 
-        void Place(Camera mainCamera, Vector3 worldPosition, float width, float height, float fraction, Color fillColor)
+        // green for yours, red for theirs. never lerped by health - the fill's width already shows that,
+        // and a colour doing both jobs makes neither readable at a glance.
+        static Color FillColor(bool commandedByLocalPlayer)
         {
-            Vector3 screen = mainCamera.WorldToScreenPoint(worldPosition);
-            if (screen.z <= 0f)
-                return; // behind the camera
+            return commandedByLocalPlayer ? Color.green : Color.red;
+        }
+
+        // pass "" for a line that should not appear: a selected but not inspected unit has no name to show
+        void Place(Vector3 worldPosition, float fraction, Color fillColor, string name, string troops)
+        {
             if (usedBars == backgrounds.Count)
                 CreateBar();
             Image background = backgrounds[usedBars];
+            // usedBars is not advanced when this fails, so the loop at the end of LateUpdate turns this bar off along with the rest of the unused ones
+            if (!CameraController.TryPin(background.rectTransform, worldPosition))
+                return;
             Image fill = fills[usedBars];
+            TMP_Text nameLabel = nameLabels[usedBars];
+            TMP_Text troopLabel = troopLabels[usedBars];
             usedBars++;
 
             background.gameObject.SetActive(true);
-            background.rectTransform.sizeDelta = new Vector2(width, height);
-            background.rectTransform.position = new Vector3(screen.x, screen.y, 0f);
-            fill.rectTransform.sizeDelta = new Vector2(width * Mathf.Clamp01(fraction), 0f);
+            // Fill is anchored to stretch across Interior with all four offsets at 0, so anchorMax.x is a
+            // fraction of the bar's width.
+            fill.rectTransform.anchorMax = new Vector2(fraction, 1f);
             fill.color = fillColor;
+            SetLine(nameLabel, name);
+            SetLine(troopLabel, troops);
+        }
+
+        static void SetLine(TMP_Text label, string text)
+        {
+            label.gameObject.SetActive(text.Length > 0);
+            label.text = text;
         }
 
         void CreateBar()
         {
             Image background = Instantiate(barPrefab, transform);
             backgrounds.Add(background);
-            fills.Add(background.transform.GetChild(0).GetComponent<Image>());
+            // looked up by name, not by child index: the prefab's layout is meant to be rearranged freely,
+            // and two TMP children mean there is no longer a single one to find by type
+            fills.Add(background.transform.Find("Interior/Fill").GetComponent<Image>());
+            nameLabels.Add(background.transform.Find("Name").GetComponent<TMP_Text>());
+            troopLabels.Add(background.transform.Find("Troops").GetComponent<TMP_Text>());
         }
     }
 }

@@ -64,6 +64,13 @@ namespace TankIO
             }
         }
 
+        // the one slot-to-tank mapping. the map badges read it here rather than re-deriving the sort,
+        // or the number floating over a tank could disagree with the number in its strip slot.
+        public TankController TankInSlot(int slot)
+        {
+            return slot >= 0 && slot < slotTanks.Length ? slotTanks[slot] : null;
+        }
+
         // a disabled button cannot fire, so a null tank here always means "deploy"
         // maybe later double click will focus camera on the tank
         void OnSlotClicked(int slot)
