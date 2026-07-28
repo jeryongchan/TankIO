@@ -104,3 +104,9 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# Asset store packs kept local, not committed
+/Assets/PBR Ground Materials #2 [[]Dirt, Grass & Rocky[]]/
+/Assets/PBR Ground Materials #2 [[]Dirt, Grass & Rocky[]].meta
+/Assets/JMO Assets/
+/Assets/JMO Assets.meta

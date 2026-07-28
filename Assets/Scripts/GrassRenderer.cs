@@ -9,7 +9,6 @@ namespace TankIO
     // matrices only, no GameObjects. planting reruns on GridChanged; drawing resubmits
     // every frame because RenderMeshInstanced keeps nothing between frames.
     [ExecuteAlways]
-    [RequireComponent(typeof(TileGrid))]
     public class GrassRenderer : MonoBehaviour
     {
         [SerializeField]
@@ -38,10 +37,20 @@ namespace TankIO
         private float plantCutoff = 0.55f;
 
         [SerializeField, Range(0.01f, 0.5f)]
-        private float edgeFade = 0.2f; // weight past the cutoff before grass reaches full size
+        private float edgeFade = 0.2f; // weight above the cutoff at which edgeSink and edgeThinning reach zero
 
         [SerializeField, Range(0f, 1f)]
-        private float edgeMinScale = 0.3f; // size of grass sitting on the cutoff itself
+        private float edgeSink = 0.5f; // how deep grass on the cutoff is buried, as a fraction of its height
+
+        [SerializeField, Range(0f, 1f)]
+        private float edgeThinning = 0.7f; // on top of the cutoff gradient of sinking grass, it also choose not to plant grass' according to the same gradient band
+
+        [SerializeField, Range(0f, 3f)]
+        private float treeClearRadius = 1.2f; // tiles from a trunk before grass is back to full
+#if UNITY_EDITOR
+        [SerializeField]
+        private bool showRegionGizmos = true;
+#endif
 
         private TileGrid tileGrid;
         private InstancedMeshDrawer drawer;
@@ -66,6 +75,10 @@ namespace TankIO
             if (drawer == null)
                 return;
             if (Application.isPlaying && CameraController.Lod != LodTier.Near) // play mode's zoom out will make trees vanish; isPlaying prevent it vanishing in editor
+                return;
+            // flat grass has no visible mirror image.
+            // need to manually exclude since RenderMeshInstanced has no GameObject for the mirror's cullingMask to filter.
+            if (camera == PlanarReflection.MirrorCamera)
                 return;
             drawer.Draw(camera);
         }
@@ -93,6 +106,8 @@ namespace TankIO
 
             var regions = new Dictionary<Vector2Int, List<Matrix4x4>>();
             Matrix4x4 gridToWorld = transform.localToWorldMatrix;
+            // pivot to tip, which is what a sink fraction is measured against
+            float chunkHeight = mesh.bounds.max.y * grassPrefab.transform.localScale.y;
 
             int planted = 0;
             for (int row = 0; row < tileGrid.Height && planted < maxChunks; row++)
@@ -112,7 +127,7 @@ namespace TankIO
                     var key = new Vector2Int(col / regionSize, row / regionSize);
                     if (!regions.TryGetValue(key, out var matrices))
                         regions[key] = matrices = new List<Matrix4x4>();
-                    planted += Plant(tile, gridToWorld, matrices);
+                    planted += Plant(tile, gridToWorld, chunkHeight, matrices);
                 }
             }
 
@@ -125,11 +140,10 @@ namespace TankIO
         }
 
 #if UNITY_EDITOR
-        // the boxes worldBounds culls against, drawn where they actually sit. flat, because
-        // they wrap chunk origins plus the sway margin and grass has no height spread.
+        // visualize the grass regions!
         void OnDrawGizmosSelected()
         {
-            if (drawer == null)
+            if (!showRegionGizmos || drawer == null)
                 return;
 
             for (int i = 0; i < drawer.RegionCount; i++)
@@ -144,7 +158,27 @@ namespace TankIO
         }
 #endif
 
-        int Plant(Vector2Int tile, Matrix4x4 gridToWorld, List<Matrix4x4> matrices)
+        // distance from the tile centre to the nearest trunk.
+        float TreeClearance(Vector2Int tile)
+        {
+            if (treeClearRadius <= 0f)
+                return 1f;
+
+            int reach = Mathf.CeilToInt(treeClearRadius);
+            float nearest = float.MaxValue;
+            for (int dy = -reach; dy <= reach; dy++)
+            {
+                for (int dx = -reach; dx <= reach; dx++)
+                {
+                    if (!tileGrid.HasTree(new Vector2Int(tile.x + dx, tile.y + dy)))
+                        continue;
+                    nearest = Mathf.Min(nearest, Mathf.Sqrt(dx * dx + dy * dy));
+                }
+            }
+            return nearest == float.MaxValue ? 1f : Mathf.InverseLerp(0f, treeClearRadius, nearest);
+        }
+
+        int Plant(Vector2Int tile, Matrix4x4 gridToWorld, float chunkHeight, List<Matrix4x4> matrices)
         {
             // offset by the seed so grass jitter does not land on the same values as TreeRng
             var rng = Random.CreateFromIndex((uint)(grassSeed * 1000003 + tile.x + tile.y * tileGrid.Width));
@@ -162,16 +196,18 @@ namespace TankIO
                 float offsetZ = rng.NextFloat(-1f, 1f) * positionJitter;
                 Quaternion rotation = Quaternion.Euler(0f, rng.NextFloat(360f), 0f);
                 float sizeJitter = 1f + rng.NextFloat(-1f, 1f) * scaleJitter;
-                // per chunk, not per tile: sampling at the chunk's own position rounds the patch
-                // silhouette, where one shared tile weight kept it square
+                float thinning = rng.NextFloat(); // do rng here instead of after weight to ensure consistency
+                // sampled per chunk, not per tile: one shared tile weight made square patch edges
                 float weight = tileGrid.GrassWeight(tile.x + offsetX, tile.y + offsetZ);
                 if (weight < plantCutoff)
                     continue;
                 float edge = Mathf.InverseLerp(plantCutoff, plantCutoff + edgeFade, weight);
-
-                Vector3 local = centre + new Vector3(offsetX * tileSize, 0f, offsetZ * tileSize);
-                // the prefab carries its own size; jitter only varies it
-                Vector3 scale = grassPrefab.transform.localScale * Mathf.Lerp(edgeMinScale, 1f, edge) * sizeJitter;
+                edge = Mathf.Min(edge, TreeClearance(tile)); // read edgefade above better
+                if (thinning > Mathf.Lerp(1f - edgeThinning, 1f, edge)) // read edgeThinning above better
+                    continue;
+                Vector3 scale = grassPrefab.transform.localScale * sizeJitter;
+                float sink = (1f - edge) * edgeSink * chunkHeight * sizeJitter;
+                Vector3 local = centre + new Vector3(offsetX * tileSize, -sink, offsetZ * tileSize);
                 matrices.Add(gridToWorld * Matrix4x4.TRS(local, rotation, scale));
                 planted++;
             }

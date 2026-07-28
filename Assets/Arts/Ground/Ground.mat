@@ -1,0 +1,122 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: Ground
+  m_Shader: {fileID: 4800000, guid: b55582c969abfef4f80646ef208e79c3, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses:
+  - MOTIONVECTORS
+  m_LockedProperties: _ShoreWobble
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _DirtAlbedo:
+        m_Texture: {fileID: 2800000, guid: f9880fcfb10b0f1499ee28217e0b7866, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _DirtHeight:
+        m_Texture: {fileID: 2800000, guid: 90c5226b8d3888a409917e02a96f1304, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _DirtNormal:
+        m_Texture: {fileID: 2800000, guid: 07e4ba87e9ac7cb4c88544538e42facd, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _DropRippleField:
+        m_Texture: {fileID: 2800000, guid: 1673de1feec841eaa4daf69d569d58aa, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _GrassAlbedo:
+        m_Texture: {fileID: 2800000, guid: ac33c3ba5b1bf084d8d0f235dbe3333d, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _GroundMask:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _PuddleNoise:
+        m_Texture: {fileID: 2800000, guid: 860d5795407629d4abd711284b18ae3e, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _RippleField:
+        m_Texture: {fileID: 2800000, guid: 1673de1feec841eaa4daf69d569d58aa, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _RippleNormal:
+        m_Texture: {fileID: 2800000, guid: 4722ba61005363b44b7615cca07ad3af, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _SplatMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _BlendWidth: 0.17
+    - _DirtRelief: 3
+    - _DropRate: 1.61
+    - _DropStrength: 0.76
+    - _DropTiling: 0.141
+    - _GlintPower: 128
+    - _GlintTilt: 0
+    - _HeightBlend: 0.084
+    - _PatchStrength: 0.539
+    - _PatchTiling: 0.025
+    - _PuddleCoverage: 0.7
+    - _PuddleDetailAmount: 0.308
+    - _PuddleDetailScale: 5.83
+    - _PuddleEdge: 0.025
+    - _PuddleMurk: 0
+    - _PuddleSink: 0.3
+    - _ReflectionDistort: 1.5
+    - _ReflectionExposure: 1
+    - _ReflectionOpacity: 6
+    - _ReflectionStrength: 6
+    - _RimDirectional: 0.815
+    - _RimSpread: 1
+    - _RippleSpeed: 0.0327
+    - _RippleStrength: 0.776
+    - _RippleTiling: 0.05
+    - _ShoreWobble: 0.05
+    m_Colors:
+    - _DirtTiling: {r: 0.4, g: 0.5, b: 0, a: 0}
+    - _EdgeGlow: {r: 8, g: 8, b: 8, a: 0.8}
+    - _GlintColor: {r: 1, g: 1, b: 1, a: 1}
+    - _GrassTiling: {r: 1, g: 1, b: 0, a: 0}
+    - _GrassTint: {r: 0.2924527, g: 0.75343055, b: 1, a: 0.85882354}
+    - _GroundHaze: {r: 0.62, g: 0.65999997, b: 0.72, a: 0}
+    - _PuddleSheen: {r: 0.5593528, g: 0.7880032, b: 0.99371064, a: 0.72156864}
+    - _PuddleTiling: {r: 0.1, g: 0.1, b: 0, a: 0}
+    - _PuddleWaterColor: {r: 0, g: 0, b: 0, a: 1}
+    - _ReflectionTint: {r: 0, g: 0.29452366, b: 0.3773585, a: 1}
+    - _RimLightDir: {r: 1, g: 0.5, b: 0, a: 0}
+    - _WaterTint: {r: 0, g: 0, b: 0, a: 1}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1
+--- !u!114 &1638820402564753335
+MonoBehaviour:
+  m_ObjectHideFlags: 11
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d0353a89b1f911e48b9e16bdc9f2e058, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Unity.RenderPipelines.Universal.Editor::UnityEditor.Rendering.Universal.AssetVersion
+  version: 10

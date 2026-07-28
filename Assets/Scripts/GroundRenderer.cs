@@ -3,7 +3,6 @@ using UnityEngine;
 namespace TankIO
 {
     [ExecuteAlways]
-    [RequireComponent(typeof(TileGrid), typeof(MeshFilter), typeof(MeshRenderer))]
     public class GroundRenderer : MonoBehaviour
     {
         private TileGrid tileGrid;
@@ -70,17 +69,11 @@ namespace TankIO
             };
 
             var normals = new Vector3[] { Vector3.up, Vector3.up, Vector3.up, Vector3.up };
-            // w = -1 puts the bitangent along +Z, matching uv.y. without tangents the normal maps
-            // would light from an arbitrary direction.
-            var tangent = new Vector4(1f, 0f, 0f, -1f);
-            var tangents = new Vector4[] { tangent, tangent, tangent, tangent };
-
             var triangles = new int[] { 0, 1, 2, 0, 2, 3 };
 
             groundMesh.Clear();
             groundMesh.SetVertices(vertices);
             groundMesh.SetNormals(normals);
-            groundMesh.SetTangents(tangents);
             groundMesh.SetUVs(0, uv);
             groundMesh.SetTriangles(triangles, 0);
             groundMesh.RecalculateBounds();
@@ -119,11 +112,10 @@ namespace TankIO
             }
             groundMask.SetPixelData(texels, 0);
             groundMask.Apply(false, false);
-            // a property block rather than the shared material: the mask is generated per scene and
-            // writing it to the material asset would dirty it on every domain reload.
+            // a block, not the shared material: these textures are DontSave, so the asset would be
+            // left dirty with a dead reference. one field, so both builders add to the same block.
             if (properties == null)
                 properties = new MaterialPropertyBlock();
-            meshRenderer.GetPropertyBlock(properties);
             properties.SetTexture(GroundMaskId, groundMask);
             meshRenderer.SetPropertyBlock(properties);
         }
@@ -160,7 +152,6 @@ namespace TankIO
             splatMap.Apply(false, false);
             if (properties == null)
                 properties = new MaterialPropertyBlock();
-            meshRenderer.GetPropertyBlock(properties);
             properties.SetTexture(SplatMapId, splatMap);
             meshRenderer.SetPropertyBlock(properties);
         }

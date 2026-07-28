@@ -7,7 +7,6 @@ namespace TankIO
 {
     // draw trees with InstancedMeshDrawer: matrices only, no GameObjects.
     [ExecuteAlways]
-    [RequireComponent(typeof(TileGrid))]
     public class TreeRenderer : MonoBehaviour
     {
         [SerializeField]
@@ -27,6 +26,11 @@ namespace TankIO
 
         [SerializeField, Min(0f)]
         private float iconScale = 1.5f;
+
+#if UNITY_EDITOR
+        [SerializeField]
+        private bool showRegionGizmos = true;
+#endif
 
         private TileGrid tileGrid;
         private InstancedMeshDrawer[] drawers; // one per variant: a drawer holds one mesh
@@ -119,7 +123,7 @@ namespace TankIO
             return renderers;
         }
 
-        // per variant, matrices bucketed by region — same scheme as GrassRenderer.
+        // per variant, matrices bucketed by region, same scheme as GrassRenderer.
         // icons share the region keys so both tiers cull against the same boxes.
         void CollectMatrices(
             MeshRenderer[] renderers,
@@ -204,6 +208,26 @@ namespace TankIO
             );
             iconDrawer.AddRegions(iconRegions, iconScale);
         }
+
+#if UNITY_EDITOR
+        // visualize the grass regions!
+        void OnDrawGizmosSelected()
+        {
+            if (!showRegionGizmos || drawers == null)
+                return;
+
+            foreach (var drawer in drawers)
+            {
+                for (int i = 0; i < drawer.RegionCount; i++)
+                {
+                    Bounds bounds = drawer.GetRegionBounds(i);
+                    Gizmos.color = new Color(0f, 0.45f, 0.35f, 0.9f);
+                    Gizmos.DrawWireCube(bounds.center, bounds.size);
+                    UnityEditor.Handles.Label(bounds.center, drawer.GetRegionInstanceCount(i).ToString());
+                }
+            }
+        }
+#endif
 
         // For testing future tree arts: strip only keep the lowest-vertex LOD
         static MeshRenderer LowestLod(GameObject prefab)

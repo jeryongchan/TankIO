@@ -17,6 +17,8 @@ namespace TankIO
         [SerializeField]
         private GameObject hqDetailPrefab;
 
+        private const int RimMargin = 10; // move spawned players away from rim
+
         void Start()
         {
             // every ServerSetCommanderBeforeSpawn write logs "doesn't know its NetworkBehaviour yet",
@@ -107,7 +109,8 @@ namespace TankIO
         {
             TileGrid grid = TileGrid.Instance;
             Vector2 center = grid.CenterPoint;
-            float rimRadius = grid.Radius - (HqController.FootprintRadius + 1); // the footprint fits inside the rim
+
+            float rimRadius = grid.Radius - HqController.FootprintRadius - RimMargin;
             float minRadius = HqController.FootprintRadius * 2 + 2; // innermost ring whose footprint clears the capital's
             float startRadius = Mathf.Lerp(minRadius, rimRadius, spawnDepth);
 

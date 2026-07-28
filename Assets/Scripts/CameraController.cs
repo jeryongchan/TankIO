@@ -83,7 +83,8 @@ namespace TankIO
             return true;
         }
 
-        private const float CameraDistance = 1000f; // so wont clip into large grid
+        // far enough that nothing on the map clips the near plane, and no further: shadow distance is measured from the camera
+        private const float CameraDistance = 50f;
 
         void Start()
         {
