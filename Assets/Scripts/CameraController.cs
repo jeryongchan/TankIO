@@ -57,6 +57,12 @@ namespace TankIO
 
         public static LodTier Lod { get; private set; }
 
+        public bool LodEnabled
+        {
+            get { return lodEnabled; }
+            set { lodEnabled = value; }
+        }
+
         // health bars, badges and the HQ buttons all read this so they scale with camera zoom (dont retain size).
         public static float OverlayScale
         {
@@ -83,8 +89,11 @@ namespace TankIO
             return true;
         }
 
-        // far enough that nothing on the map clips the near plane, and no further: shadow distance is measured from the camera
-        private const float CameraDistance = 50f;
+        // shadow distance is measured from the camera, so the Near tier stays here and no further
+        private const float MinCameraDistance = 50f;
+
+        // depth a point loses per unit of height is height / sin(tilt), so this buys 10 units of it
+        private const float ClipMargin = 20f;
 
         void Start()
         {
@@ -92,10 +101,23 @@ namespace TankIO
             cam = GetComponent<Camera>();
             RefreshClampLimits();
             PlaceAbove(new Vector3((minX + maxX) * 0.5f, 0f, (minZ + maxZ) * 0.5f));
-            cam.farClipPlane = Mathf.Max(cam.farClipPlane, CameraDistance * 2f);
+            cam.farClipPlane = Mathf.Max(cam.farClipPlane, DistanceFor(maxZoom) * 2f);
+            ApplyCameraDistance();
+        }
 
-            float tiltDegrees = transform.eulerAngles.x;
-            groundZOffset = cam.transform.position.y / Mathf.Tan(Mathf.Deg2Rad * tiltDegrees);
+        // grows with zoom, or the bottom of the view crosses the near plane and cuts away the ground
+        float DistanceFor(float zoom)
+        {
+            return Mathf.Max(MinCameraDistance, zoom / Mathf.Tan(Mathf.Deg2Rad * transform.eulerAngles.x) + ClipMargin);
+        }
+
+        // an ortho camera renders the same image from any distance along forward: only the clip range moves
+        void ApplyCameraDistance()
+        {
+            float tilt = Mathf.Deg2Rad * transform.eulerAngles.x;
+            float distance = DistanceFor(cam.orthographicSize);
+            cam.transform.position += cam.transform.forward * (cam.transform.position.y / Mathf.Sin(tilt) - distance);
+            groundZOffset = distance * Mathf.Cos(tilt);
         }
 
         public void CenterOn(Vector3 worldPoint)
@@ -108,13 +130,14 @@ namespace TankIO
 
         void PlaceAbove(Vector3 groundTarget)
         {
-            cam.transform.position = groundTarget - cam.transform.forward * CameraDistance;
+            cam.transform.position = groundTarget - cam.transform.forward * DistanceFor(cam.orthographicSize);
         }
 
         void Update()
         {
             HandleMouseDrag();
             HandleScrollZoom();
+            ApplyCameraDistance(); // before the clamp, which reads groundZOffset
             ClampCamera();
             Lod = CurrentLod();
         }

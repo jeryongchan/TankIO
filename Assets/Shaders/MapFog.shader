@@ -53,7 +53,7 @@ Shader "TankIO/MapFog"
                 float _FogMax;
             CBUFFER_END
 
-            // set globally by MapFogBinder. xy is the grid centre on the world xz plane; the quad
+            // set globally by MapSizeBinder. xy is the grid centre on the world xz plane; the quad
             // is parented to the camera and never sees the grid's own transform.
             float4 _MapCenter;
             float _MapRadius;

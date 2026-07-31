@@ -65,16 +65,16 @@ namespace TankIO
         private bool arrivalApplied;
 
         [SerializeField]
-        private GameObject buildingBody; // the deployed base
+        private GameObject buildingBody;
 
         [SerializeField]
-        private GameObject packedBody; // the vehicle it becomes mid-move; authored facing +Z so LookRotation can aim it
+        private GameObject packedBody;
 
         [SerializeField]
-        private Material ownIconMaterial; // the Mid square and Far dot, colored by who commands the HQ
+        private Color ownIconColor = new Color(0f, 1f, 0.13f); // tints the shared icon material
 
         [SerializeField]
-        private Material enemyIconMaterial;
+        private Color enemyIconColor = new Color(1f, 0.066f, 0f);
 
         [SerializeField]
         private MeshRenderer midIcon; // the flat square standing in for the base at Mid
@@ -98,6 +98,23 @@ namespace TankIO
             // wrecks driving home to this HQ turn toward the new destination (covers knockback too,
             // which moves through the same state)
             WreckVisual.RetargetFor(CommanderId, TileGrid.Instance.TileToWorldCenter(state.ToTile));
+#if !UNITY_SERVER
+            ShowKnockbackExplosion(state);
+#endif
+        }
+
+        // a knockback replicates as an ordinary move: only the 3x glide speed gap tells them apart
+        void ShowKnockbackExplosion(MoveState state)
+        {
+            if (knockbackExplosionPrefab == null || CameraController.Lod != LodTier.Near)
+                return;
+            double glideSeconds = state.ArriveTime - state.DepartTime;
+            if (glideSeconds <= 0.0)
+                return; // the spawn state, whose two tiles are equal
+            Vector3 from = TileGrid.Instance.TileToWorldCenter(state.FromTile);
+            float speed = (float)((TileGrid.Instance.TileToWorldCenter(state.ToTile) - from).magnitude / glideSeconds);
+            if (speed > (TravelSpeed + KnockbackSpeed) * 0.5f)
+                Instantiate(knockbackExplosionPrefab, from, knockbackExplosionPrefab.transform.rotation);
         }
 
         // the one one-shot moment of a move, replayed by every machine on its own clock

@@ -104,7 +104,7 @@ namespace TankIO
         }
 
         // tanks whose finite windows on any of these tiles extend past fromTime
-        // trips written before the claim existed, which would drive through it. 
+        // trips written before the claim existed, which would drive through it.
         // open-ended holders are parkers, not crossers: skipped.
         public static void FindTanksCrossingTiles(List<Vector2Int> tiles, double fromTime, List<ulong> results)
         {
@@ -189,7 +189,7 @@ namespace TankIO
             int maxRadius = Mathf.Max(TileGrid.Instance.Width, TileGrid.Instance.Height);
             for (int radius = 0; results.Count < count && radius <= maxRadius; radius++)
             {
-                BuildRingNearestFirst(center, radius);
+                BuildRingNearestFirst(center, radius, center);
                 foreach (Vector2Int tile in ringBuffer)
                 {
                     if (results.Count < count && IsUnclaimedParkTile(tile, ignoredTankIds, 0))
@@ -208,9 +208,21 @@ namespace TankIO
             out Vector2Int result
         )
         {
+            return TryNearestUnclaimedParkTile(center, maxRingRadius, searchingTankId, center, out result);
+        }
+
+        // preferNear orders tiles within a ring; the rings still grow from center
+        public static bool TryNearestUnclaimedParkTile(
+            Vector2Int center,
+            int maxRingRadius,
+            ulong searchingTankId,
+            Vector2Int preferNear,
+            out Vector2Int result
+        )
+        {
             for (int radius = 0; radius <= maxRingRadius; radius++)
             {
-                BuildRingNearestFirst(center, radius);
+                BuildRingNearestFirst(center, radius, preferNear);
                 foreach (Vector2Int tile in ringBuffer)
                 {
                     if (IsUnclaimedParkTile(tile, null, searchingTankId))
@@ -226,8 +238,9 @@ namespace TankIO
 
         private static readonly List<Vector2Int> ringBuffer = new List<Vector2Int>();
 
-        // the square ring of tiles this many steps from the center (chebyshev radius).
-        private static void BuildRingNearestFirst(Vector2Int center, int radius)
+        // the square ring of tiles this many steps from the center (chebyshev radius), nearest
+        // sortNear first. passing center puts edge midpoints ahead of corners.
+        private static void BuildRingNearestFirst(Vector2Int center, int radius, Vector2Int sortNear)
         {
             ringBuffer.Clear();
             if (radius == 0)
@@ -248,8 +261,8 @@ namespace TankIO
             ringBuffer.Sort(
                 (tileA, tileB) =>
                 {
-                    int distanceA = (tileA - center).sqrMagnitude;
-                    int distanceB = (tileB - center).sqrMagnitude;
+                    int distanceA = (tileA - sortNear).sqrMagnitude;
+                    int distanceB = (tileB - sortNear).sqrMagnitude;
                     if (distanceA != distanceB)
                         return distanceA.CompareTo(distanceB);
                     if (tileA.x != tileB.x)

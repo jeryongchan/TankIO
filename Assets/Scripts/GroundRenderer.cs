@@ -14,6 +14,7 @@ namespace TankIO
         private MaterialPropertyBlock properties;
         private static readonly int GroundMaskId = Shader.PropertyToID("_GroundMask");
         private static readonly int SplatMapId = Shader.PropertyToID("_SplatMap");
+        private static readonly int GroundSimpleId = Shader.PropertyToID("_GroundSimple");
 
         void OnEnable()
         {
@@ -33,6 +34,14 @@ namespace TankIO
                 DestroyImmediate(groundMask);
             if (splatMap != null)
                 DestroyImmediate(splatMap);
+        }
+
+        // a global, not the property block: that only rebuilds when the grid changes.
+        // in edit mode the static holds the last play session's zoom.
+        void LateUpdate()
+        {
+            bool near = !Application.isPlaying || CameraController.Lod == LodTier.Near;
+            Shader.SetGlobalFloat(GroundSimpleId, near ? 0f : 1f);
         }
 
         void Rebuild()

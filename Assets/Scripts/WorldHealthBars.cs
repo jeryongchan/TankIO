@@ -19,6 +19,12 @@ namespace TankIO
         [SerializeField]
         private float hqBarHeightAboveBase = 2.2f;
 
+        [SerializeField]
+        private Color ownColor = Color.green;
+
+        [SerializeField]
+        private Color enemyColor = Color.red;
+
         private readonly List<Image> backgrounds = new List<Image>();
         private readonly List<Image> fills = new List<Image>();
         private readonly List<TMP_Text> nameLabels = new List<TMP_Text>();
@@ -65,11 +71,11 @@ namespace TankIO
                 backgrounds[index].gameObject.SetActive(false);
         }
 
-        // green for yours, red for theirs. never lerped by health - the fill's width already shows that,
-        // and a colour doing both jobs makes neither readable at a glance.
-        static Color FillColor(bool commandedByLocalPlayer)
+        // one colour for yours, one for theirs. never lerped by health - the fill's width already
+        // shows that, and a colour doing both jobs makes neither readable at a glance.
+        Color FillColor(bool commandedByLocalPlayer)
         {
-            return commandedByLocalPlayer ? Color.green : Color.red;
+            return commandedByLocalPlayer ? ownColor : enemyColor;
         }
 
         // pass "" for a line that should not appear: a selected but not inspected unit has no name to show

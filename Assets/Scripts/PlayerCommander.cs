@@ -12,6 +12,9 @@ namespace TankIO
         private const float DragThresholdPixels = 64f; // below this a press and release is a click, not a box
         private const float BoxBorderThickness = 3f;
 
+        [SerializeField]
+        private Color dragBoxColor = Color.green;
+
         private readonly List<TankController> selection = new List<TankController>();
         private HqController selectedHq; // never selected together with tanks: picking either deselects the other
         private bool placingHq; // a [Move] press is waiting for its ground click
@@ -28,6 +31,14 @@ namespace TankIO
         private Vector2 rightPressScreenPosition; // where a pan began, to tell a cancel from a camera drag
 
         public static PlayerCommander Instance { get; private set; } // the tank strip routes slot clicks here
+
+        public IReadOnlyList<TankController> Selection
+        {
+            get { return selection; }
+        }
+
+        // the strip's toggle: mobile has no alt key, so while on, ground clicks issue attack-moves
+        public bool AutoFireEnabled { get; set; }
 
         void Awake()
         {
@@ -50,6 +61,14 @@ namespace TankIO
             {
                 RemoveDestroyedTanks();
                 DeselectAll();
+            }
+
+            // commands are Near-only. escape stays above: deselecting while zoomed out is fine
+            if (CameraController.Lod != LodTier.Near)
+            {
+                dragging = false; // a box in progress dies here rather than firing on the far side of a zoom
+                placingHq = false;
+                return;
             }
 
             Mouse mouse = Mouse.current;
@@ -113,12 +132,12 @@ namespace TankIO
             Vector2 mousePosition = Mouse.current.position.ReadValue();
             if (!hq.IsValidDestination(tile))
             {
-                HudCursorLabel.Show("blocked", Color.red, mousePosition);
+                HudCursorLabel.Show("blocked", false, mousePosition);
                 return;
             }
             float cost = HqController.MoveCost(hq.HomeTile, tile);
             bool affordable = hq.Gold(now) >= cost;
-            HudCursorLabel.Show($"move: {cost:0} gold", affordable ? Color.green : Color.red, mousePosition);
+            HudCursorLabel.Show($"move: {cost:0} gold", affordable, mousePosition);
         }
 
         // the tile a placement click would land on: the ground under the cursor, snapped onto the
@@ -227,7 +246,7 @@ namespace TankIO
                 return;
             }
             // alt+click ground: attack-move. alt+click on a tank or HQ already fell through to the plain attack above.
-            MoveSelectionTo(goal, keyboard != null && keyboard.altKey.isPressed);
+            MoveSelectionTo(goal, AutoFireEnabled || (keyboard != null && keyboard.altKey.isPressed));
         }
 
         // search outward from the clicked tile for one unclaimed parking spot per tank,
@@ -413,7 +432,7 @@ namespace TankIO
             Rect box = ScreenRect(start, current);
 
             Color previousColor = GUI.color; // shared with every other OnGUI this frame
-            GUI.color = Color.green;
+            GUI.color = dragBoxColor;
             DrawBoxEdge(new Rect(box.xMin, box.yMin, box.width, BoxBorderThickness));
             DrawBoxEdge(new Rect(box.xMin, box.yMax - BoxBorderThickness, box.width, BoxBorderThickness));
             DrawBoxEdge(new Rect(box.xMin, box.yMin, BoxBorderThickness, box.height));

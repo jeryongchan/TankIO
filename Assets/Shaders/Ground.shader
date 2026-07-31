@@ -103,6 +103,8 @@ Shader "TankIO/Ground"
         // flag is per camera: scene view and previews get 0 rather than a mismatched image.
         TEXTURE2D(_PlanarReflectionTex); SAMPLER(sampler_PlanarReflectionTex);
         float _PlanarReflectionOn;
+        // set by GroundRenderer: 1 outside the Near tier
+        float _GroundSimple;
 
         // the mask is one texel per tile with no mip chain, so a texel is either ground or void.
         void ClipToGround(float2 uv)
@@ -170,63 +172,74 @@ Shader "TankIO/Ground"
                 // and reads as fog, not a border.
                 weight = smoothstep(0.5 - _BlendWidth, 0.5 + _BlendWidth, weight);
 
-                half3 grass = SAMPLE_TEXTURE2D(_GrassAlbedo, sampler_GrassAlbedo, IN.positionWS.xz * _GrassTiling.xy).rgb * _GrassTint.rgb;
-                half3 dirt = SAMPLE_TEXTURE2D(_DirtAlbedo, sampler_DirtAlbedo, IN.positionWS.xz * _DirtTiling.xy).rgb;
+                // the bias runs past the mip chain: each albedo flattens to its 1x1 average
+                half3 grass = SAMPLE_TEXTURE2D_BIAS(_GrassAlbedo, sampler_GrassAlbedo, IN.positionWS.xz * _GrassTiling.xy, _GroundSimple * 16).rgb * _GrassTint.rgb;
+                half3 dirt = SAMPLE_TEXTURE2D_BIAS(_DirtAlbedo, sampler_DirtAlbedo, IN.positionWS.xz * _DirtTiling.xy, _GroundSimple * 16).rgb;
                 // alpha holds grass back from the albedo only: weight stays untouched, so puddles
                 // and relief still read the shape the splat map drew.
                 half3 albedo = lerp(dirt, grass, weight * _GrassTint.a);
 
-                // scrolling normals for the water surface. decoded by hand (*2-1, not UnpackNormal)
-                // because this one is imported as a plain sRGB-off Default map, unlike _DirtNormal.
-                // sampled before the pools: the waterline lookup rides on the slope.
-                float2 rippleUV = IN.positionWS.xz * _RippleTiling;
-                half2 rn1 = SAMPLE_TEXTURE2D(_RippleNormal, sampler_RippleNormal, rippleUV + float2(_Time.y * _RippleSpeed, 0)).rg * 2.0 - 1.0;
-                half2 rn2 = SAMPLE_TEXTURE2D(_RippleNormal, sampler_RippleNormal, rippleUV * 1.7 - float2(0, _Time.y * _RippleSpeed * 0.7)).rg * 2.0 - 1.0;
-                half2 slope = (rn1 + rn2) * 0.5;
-
-                // pools are low-frequency noise over a coverage threshold. sampling at a
-                // wave-displaced position drags the waterline with the ripples so the shore laps;
-                // every edge effect keys off poolPos and inherits it.
-                float2 poolPos = IN.positionWS.xz + slope * _ShoreWobble;
-                float noise = SAMPLE_TEXTURE2D(_PuddleNoise, sampler_PuddleNoise, poolPos * _PuddleTiling.xy).r;
-                // finer octave on the threshold: one smooth noise alone gives rounded blobs
-                float detail = SAMPLE_TEXTURE2D(_PuddleNoise, sampler_PuddleNoise, poolPos * _PuddleTiling.xy * _PuddleDetailScale).r;
-                float threshold = 1.0 - _PuddleCoverage + (detail - 0.5) * _PuddleDetailAmount;
-                float pool = smoothstep(threshold - _PuddleEdge, threshold + _PuddleEdge, noise);
-                // kept separate from the pool shape: folded in, a grass border would sweep through
-                // the half-covered value the shoreline rim keys on and ring every patch in surf.
+                // skips seven samples. every pixel reads the same global, so the branch truly skips
                 float dryGround = 1.0 - weight;
-                float puddle = pool * dryGround;
+                half2 wave = 0;
+                half2 relief = 0;
+                float pool = 0;
+                float puddle = 0;
+                float detail = 0;
+                UNITY_BRANCH
+                if (_GroundSimple < 0.5)
+                {
+                    // scrolling normals for the water surface. decoded by hand (*2-1, not UnpackNormal)
+                    // because this one is imported as a plain sRGB-off Default map, unlike _DirtNormal.
+                    // sampled before the pools: the waterline lookup rides on the slope.
+                    float2 rippleUV = IN.positionWS.xz * _RippleTiling;
+                    half2 rn1 = SAMPLE_TEXTURE2D(_RippleNormal, sampler_RippleNormal, rippleUV + float2(_Time.y * _RippleSpeed, 0)).rg * 2.0 - 1.0;
+                    half2 rn2 = SAMPLE_TEXTURE2D(_RippleNormal, sampler_RippleNormal, rippleUV * 1.7 - float2(0, _Time.y * _RippleSpeed * 0.7)).rg * 2.0 - 1.0;
+                    half2 slope = (rn1 + rn2) * 0.5;
 
-                // darken the gravel out of the way: losing that detail is what reads as a surface
-                // rather than wet ground. toward black, since everything visible in a pool is
-                // composited after the PBR call and needs no base to sit on.
-                albedo *= 1.0 - _PuddleMurk * puddle;
+                    // pools are low-frequency noise over a coverage threshold. sampling at a
+                    // wave-displaced position drags the waterline with the ripples so the shore laps;
+                    // every edge effect keys off poolPos and inherits it.
+                    float2 poolPos = IN.positionWS.xz + slope * _ShoreWobble;
+                    float noise = SAMPLE_TEXTURE2D(_PuddleNoise, sampler_PuddleNoise, poolPos * _PuddleTiling.xy).r;
+                    // finer octave on the threshold: one smooth noise alone gives rounded blobs
+                    detail = SAMPLE_TEXTURE2D(_PuddleNoise, sampler_PuddleNoise, poolPos * _PuddleTiling.xy * _PuddleDetailScale).r;
+                    float threshold = 1.0 - _PuddleCoverage + (detail - 0.5) * _PuddleDetailAmount;
+                    pool = smoothstep(threshold - _PuddleEdge, threshold + _PuddleEdge, noise);
+                    // kept separate from the pool shape: folded in, a grass border would sweep through
+                    // the half-covered value the shoreline rim keys on and ring every patch in surf.
+                    puddle = pool * dryGround;
 
-                // the quad faces straight up, so tangent space maps to world as x->x, y->z.
-                half2 wave = slope * (_RippleStrength * puddle);
+                    // darken the gravel out of the way: losing that detail is what reads as a surface
+                    // rather than wet ground. toward black, since everything visible in a pool is
+                    // composited after the PBR call and needs no base to sit on.
+                    albedo *= 1.0 - _PuddleMurk * puddle;
 
-                // raindrop rings. the field bakes distance to the nearest impact point, its phase,
-                // and the outward direction, so one sample animates every ring independently: a
-                // ring is where the stored distance has been overtaken by that point's age. the uv
-                // creep is too slow to see and only stops impacts repeating on the same spots.
-                float2 dropUV = IN.positionWS.xz * _DropTiling + _Time.y * 0.004;
-                half4 drop = SAMPLE_TEXTURE2D(_DropRippleField, sampler_DropRippleField, dropUV);
-                float age = frac(_Time.y * _DropRate + drop.g);
-                half band = 1.0 - saturate(abs(drop.r - age) * 9.0);
-                // squared for a tighter crest. the age term also keeps unowned texels (distance 1)
-                // from flashing at the wrap.
-                half ring = band * band * (1.0 - age);
-                // into the wave rather than drawn as a decal, so rings bend the reflection and
-                // catch glints like the rest of the surface
-                wave += (drop.ba * 2.0 - 1.0) * (ring * _DropStrength * puddle);
+                    // the quad faces straight up, so tangent space maps to world as x->x, y->z.
+                    wave = slope * (_RippleStrength * puddle);
 
-                // gravel relief. normal maps survive an ortho camera: they feed diffuse N.L, which
-                // never involved the view direction. imported as a NormalMap, so it decodes through
-                // UnpackNormal rather than the *2-1 above. tiled with the dirt albedo to land on
-                // the right grains, and faded under water, which the ripples shape instead.
-                half2 relief = UnpackNormalScale(SAMPLE_TEXTURE2D(_DirtNormal, sampler_DirtNormal, IN.positionWS.xz * _DirtTiling.xy), _DirtRelief).xy;
-                relief *= dryGround * (1.0 - puddle);
+                    // raindrop rings. the field bakes distance to the nearest impact point, its phase,
+                    // and the outward direction, so one sample animates every ring independently: a
+                    // ring is where the stored distance has been overtaken by that point's age. the uv
+                    // creep is too slow to see and only stops impacts repeating on the same spots.
+                    float2 dropUV = IN.positionWS.xz * _DropTiling + _Time.y * 0.004;
+                    half4 drop = SAMPLE_TEXTURE2D(_DropRippleField, sampler_DropRippleField, dropUV);
+                    float age = frac(_Time.y * _DropRate + drop.g);
+                    half band = 1.0 - saturate(abs(drop.r - age) * 9.0);
+                    // squared for a tighter crest. the age term also keeps unowned texels (distance 1)
+                    // from flashing at the wrap.
+                    half ring = band * band * (1.0 - age);
+                    // into the wave rather than drawn as a decal, so rings bend the reflection and
+                    // catch glints like the rest of the surface
+                    wave += (drop.ba * 2.0 - 1.0) * (ring * _DropStrength * puddle);
+
+                    // gravel relief. normal maps survive an ortho camera: they feed diffuse N.L, which
+                    // never involved the view direction. imported as a NormalMap, so it decodes through
+                    // UnpackNormal rather than the *2-1 above. tiled with the dirt albedo to land on
+                    // the right grains, and faded under water, which the ripples shape instead.
+                    relief = UnpackNormalScale(SAMPLE_TEXTURE2D(_DirtNormal, sampler_DirtNormal, IN.positionWS.xz * _DirtTiling.xy), _DirtRelief).xy;
+                    relief *= dryGround * (1.0 - puddle);
+                }
 
                 InputData inputData = (InputData)0;
                 inputData.positionWS = IN.positionWS;
@@ -245,54 +258,59 @@ Shader "TankIO/Ground"
                 surfaceData.alpha = 1.0;
 
                 half4 color = UniversalFragmentPBR(inputData, surfaceData);
-                // ortho leaves the water with no bright heart anywhere, so this drifting field puts
-                // the broad glare regions back. glints square it to cluster in the cores.
-                float patchN = SAMPLE_TEXTURE2D(_PuddleNoise, sampler_PuddleNoise, IN.positionWS.xz * _PatchTiling + _Time.y * 0.003).r;
-                float patch = 1.0 + (patchN * 2.0 - 1.0) * _PatchStrength;
-
-                // overcast-sky bounce, flat: keeps the pools from going black between glints
-                color.rgb += _PuddleSheen.rgb * (puddle * _PuddleSheen.a * patch);
-                // the mirror camera's texture is screen-aligned, so this fragment's own screen uv is
-                // the reflected scene; the wave smears the lookup so reflections wobble. alpha is
-                // coverage, the camera having cleared to transparent, so open sky contributes
-                // nothing. lerp not add: something blocking the sky has to darken the water, which
-                // is most of what passes for a shadow here.
-                if (_PlanarReflectionOn > 0.5)
+                // the ddx below is safe only because the condition is uniform
+                UNITY_BRANCH
+                if (_GroundSimple < 0.5)
                 {
-                    float2 screenUV = GetNormalizedScreenSpaceUV(IN.positionHCS);
-                    half4 refl = SAMPLE_TEXTURE2D(_PlanarReflectionTex, sampler_PlanarReflectionTex, screenUV + wave * (_ReflectionDistort * 0.05));
-                    // alpha runs thin: leaf cards clip to nothing between them and a quarter-res
-                    // target averages a canopy down further, so a reflected tree lands at about a
-                    // third weight and the water shows through, hence the coverage boost.
-                    half coverage = saturate(refl.a * _ReflectionStrength);
-                    // lerp, not multiply: the reflected rgb is near-black, and near-zero times any
-                    // hue stays near-zero. alpha is how far it drifts, so 1 is a flat colour.
-                    half3 reflected = lerp(refl.rgb, _ReflectionTint.rgb, _ReflectionTint.a);
-                    color.rgb = lerp(color.rgb, reflected, coverage * puddle);
+                    // ortho leaves the water with no bright heart anywhere, so this drifting field puts
+                    // the broad glare regions back. glints square it to cluster in the cores.
+                    float patchN = SAMPLE_TEXTURE2D(_PuddleNoise, sampler_PuddleNoise, IN.positionWS.xz * _PatchTiling + _Time.y * 0.003).r;
+                    float patch = 1.0 + (patchN * 2.0 - 1.0) * _PatchStrength;
+
+                    // overcast-sky bounce, flat: keeps the pools from going black between glints
+                    color.rgb += _PuddleSheen.rgb * (puddle * _PuddleSheen.a * patch);
+                    // the mirror camera's texture is screen-aligned, so this fragment's own screen uv is
+                    // the reflected scene; the wave smears the lookup so reflections wobble. alpha is
+                    // coverage, the camera having cleared to transparent, so open sky contributes
+                    // nothing. lerp not add: something blocking the sky has to darken the water, which
+                    // is most of what passes for a shadow here.
+                    if (_PlanarReflectionOn > 0.5)
+                    {
+                        float2 screenUV = GetNormalizedScreenSpaceUV(IN.positionHCS);
+                        half4 refl = SAMPLE_TEXTURE2D(_PlanarReflectionTex, sampler_PlanarReflectionTex, screenUV + wave * (_ReflectionDistort * 0.05));
+                        // alpha runs thin: leaf cards clip to nothing between them and a quarter-res
+                        // target averages a canopy down further, so a reflected tree lands at about a
+                        // third weight and the water shows through, hence the coverage boost.
+                        half coverage = saturate(refl.a * _ReflectionStrength);
+                        // lerp, not multiply: the reflected rgb is near-black, and near-zero times any
+                        // hue stays near-zero. alpha is how far it drifts, so 1 is a flat colour.
+                        half3 reflected = lerp(refl.rgb, _ReflectionTint.rgb, _ReflectionTint.a);
+                        color.rgb = lerp(color.rgb, reflected, coverage * puddle);
+                    }
+                    // sparkle against a virtual direction, not the sun: with one shared view direction
+                    // real alignment would hold everywhere or nowhere. tilt picks which slope catches,
+                    // and the ripples scrolling through it do the twinkling.
+                    half3 glintDir = normalize(half3(_GlintTilt, 1.0, _GlintTilt));
+                    half glint = pow(saturate(dot(inputData.normalWS, glintDir)), _GlintPower);
+                    color.rgb += _GlintColor.rgb * (_GlintColor.a * glint * puddle * patch * patch);
+                    // shoreline shine: the pool's own fade band is where thin water meets ground, so
+                    // light it directly. peaks mid-fade, zero on dry ground and in open water.
+                    half rim = pool * (1.0 - pool) * 4.0;
+                    // detail modulates rather than gates: a full multiply halved the band and crushed
+                    // its dark stretches to nothing.
+                    rim *= rim * lerp(0.4, 1.0, detail) * dryGround;
+                    // a meniscus flares only where it tilts toward the light, and that one-sided flare
+                    // is the difference between a lit edge and a traced outline.
+                    // the rim has no facing of its own, so screen derivatives of pool recover it: the gradient points across the waterline,
+                    // and under a camera that never rotates screen direction is fixed.
+                    float2 facing = float2(ddx(pool), ddy(pool));
+                    facing *= rsqrt(dot(facing, facing) + 1e-6);
+                    float2 rimDir = _RimLightDir.xy * rsqrt(dot(_RimLightDir.xy, _RimLightDir.xy) + 1e-6);
+                    half lit = saturate(dot(facing, rimDir));
+                    // spread widens the flare from a hard terminator to a soft wrap around the shore
+                    rim *= lerp(1.0, pow(lit, _RimSpread), _RimDirectional);
+                    color.rgb += _EdgeGlow.rgb * (_EdgeGlow.a * rim * patch);
                 }
-                // sparkle against a virtual direction, not the sun: with one shared view direction
-                // real alignment would hold everywhere or nowhere. tilt picks which slope catches,
-                // and the ripples scrolling through it do the twinkling.
-                half3 glintDir = normalize(half3(_GlintTilt, 1.0, _GlintTilt));
-                half glint = pow(saturate(dot(inputData.normalWS, glintDir)), _GlintPower);
-                color.rgb += _GlintColor.rgb * (_GlintColor.a * glint * puddle * patch * patch);
-                // shoreline shine: the pool's own fade band is where thin water meets ground, so
-                // light it directly. peaks mid-fade, zero on dry ground and in open water.
-                half rim = pool * (1.0 - pool) * 4.0;
-                // detail modulates rather than gates: a full multiply halved the band and crushed
-                // its dark stretches to nothing.
-                rim *= rim * lerp(0.4, 1.0, detail) * dryGround;
-                // a meniscus flares only where it tilts toward the light, and that one-sided flare
-                // is the difference between a lit edge and a traced outline. 
-                // the rim has no facing of its own, so screen derivatives of pool recover it: the gradient points across the waterline, 
-                // and under a camera that never rotates screen direction is fixed.
-                float2 facing = float2(ddx(pool), ddy(pool));
-                facing *= rsqrt(dot(facing, facing) + 1e-6);
-                float2 rimDir = _RimLightDir.xy * rsqrt(dot(_RimLightDir.xy, _RimLightDir.xy) + 1e-6);
-                half lit = saturate(dot(facing, rimDir));
-                // spread widens the flare from a hard terminator to a soft wrap around the shore
-                rim *= lerp(1.0, pow(lit, _RimSpread), _RimDirectional);
-                color.rgb += _EdgeGlow.rgb * (_EdgeGlow.a * rim * patch);
                 color.rgb = MixFog(color.rgb, inputData.fogCoord);
                 return color;
             }

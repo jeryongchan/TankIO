@@ -16,6 +16,12 @@ namespace TankIO
         [SerializeField]
         private GameObject landingMarker; // the shell reached its aim point, no verdict implied
 
+        [SerializeField]
+        private GameObject treeMarker; // a trunk stopped the shell
+
+        private const float MarkerHeight = 0.7f;
+        private const float MarkerJitter = 0.2f;
+
         private static readonly Dictionary<int, ShellVisual> visualsByShellId = new Dictionary<int, ShellVisual>();
 
         // a hit event can outlive the shell it belongs to, and then there is no instance to read the prefab
@@ -81,7 +87,7 @@ namespace TankIO
             else if (lastHitMarker != null)
             {
                 // the shell already landed and took its position with it, so this marks the target, not the contact point
-                SpawnMarker(lastHitMarker, hitTarget.transform.position + Vector3.up * 0.8f);
+                SpawnHitMarker(lastHitMarker, hitTarget.transform.position);
             }
         }
 
@@ -121,24 +127,24 @@ namespace TankIO
                 else
                 {
                     // the hit despawned the target (a killing blow), so there is no body to ride; mark where the shell is
-                    SpawnMarker(hitMarker, transform.position);
+                    SpawnHitMarker(hitMarker, transform.position);
                     Destroy(gameObject);
                 }
                 return;
             }
 
-            // generic landing, not the hit marker: a trunk stopping a shell carries no verdict about damage,
-            // the same as reaching the aim point.
+            // not the hit marker: a trunk stopping a shell carries no verdict about damage, the same as
+            // reaching the aim point. four shells fell a tree, so most of these leave it standing.
             if (distanceTraveled >= hitTreeDistance)
             {
-                SpawnMarker(landingMarker, transform.position);
+                SpawnGroundMarker(treeMarker, transform.position);
                 Destroy(gameObject);
                 return;
             }
 
             if (distanceTraveled >= flightLength)
             {
-                SpawnMarker(landingMarker, aimPoint);
+                SpawnGroundMarker(landingMarker, aimPoint);
                 Destroy(gameObject);
             }
         }
@@ -147,16 +153,35 @@ namespace TankIO
         // it does not follow the target: a moving tank drives out from under it over the marker's lifetime.
         void MarkHitOn(Component target)
         {
-            Vector3 contactOffset = (transform.position - target.transform.position).normalized * hitRadius;
-            SpawnMarker(hitMarker, target.transform.position + contactOffset);
+            Vector3 contactOffset = transform.position - target.transform.position;
+            contactOffset.y = 0f;
+            SpawnHitMarker(hitMarker, target.transform.position + contactOffset.normalized * hitRadius);
             Destroy(gameObject);
+        }
+
+        static void SpawnHitMarker(GameObject prefab, Vector3 position)
+        {
+            position.y = MarkerHeight;
+            position += new Vector3(
+                Random.Range(-MarkerJitter, MarkerJitter),
+                Random.Range(-MarkerJitter, MarkerJitter),
+                Random.Range(-MarkerJitter, MarkerJitter)
+            );
+            SpawnMarker(prefab, position);
+        }
+
+        static void SpawnGroundMarker(GameObject prefab, Vector3 position)
+        {
+            position.y = 0f;
+            SpawnMarker(prefab, position);
         }
 
         static void SpawnMarker(GameObject prefab, Vector3 position)
         {
-            if (CameraController.Lod != LodTier.Near)
-                return; // sub-tile flashes, invisible from higher up
-            Destroy(Instantiate(prefab, position, Quaternion.identity), 1f);
+            if (prefab == null || CameraController.Lod != LodTier.Near)
+                return;
+            // the authored rotation aims the spray; the prefab must destroy itself or it leaks
+            Instantiate(prefab, position, prefab.transform.rotation);
         }
     }
 }

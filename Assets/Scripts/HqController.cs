@@ -12,6 +12,9 @@ namespace TankIO
         [SerializeField]
         private GameObject tankPrefab;
 
+        [SerializeField]
+        private GameObject knockbackExplosionPrefab;
+
         public const int FootprintRadius = 1; // 3x3
 
         // placeholder economy. income rises toward the centre.
@@ -24,7 +27,7 @@ namespace TankIO
         private const float TroopRegenPerSecond = 3f; // recovery pacing: a dead tank's ~125 lost troops come back in ~40s
         private const int DeploySpawnSearchRadius = 4; // rings around the HQ searched for a free spawn tile
 
-        public const int MaxHqHealth = 500;
+        public const int MaxHqHealth = 250;
 
         public const float HqRegenPerSecond = 2f;
         private const float HqHitRadius = 1.5f; // half the 3-tile footprint width; the corners it undercuts are imperceptible
@@ -169,9 +172,9 @@ namespace TankIO
         {
             replicatedMoveState.OnValueChanged += OnMoveStateChanged;
 #if !UNITY_SERVER
-            Material iconMaterial = CommandedByLocalPlayer ? ownIconMaterial : enemyIconMaterial;
-            midIcon.sharedMaterial = iconMaterial;
-            farIcon.sharedMaterial = iconMaterial;
+            Color iconColor = CommandedByLocalPlayer ? ownIconColor : enemyIconColor;
+            LodIcon.Tint(midIcon, iconColor);
+            LodIcon.Tint(farIcon, iconColor);
 #endif
             SpawnedHqs.Add(this);
             ShellSystem.Targets.Add(this);
@@ -207,6 +210,9 @@ namespace TankIO
                     DepartTime = 0.0,
                     ArriveTime = 0.0
                 };
+                // start fielded, through the same paid path as the deploy button
+                for (int i = 0; i < MaxDeployedTanks; i++)
+                    ExecuteDeploy();
             }
             else
             {

@@ -21,6 +21,9 @@ namespace TankIO
         [SerializeField]
         private RectTransform viewRect;
 
+        [SerializeField]
+        private float padding = 12f; // panel pixels kept clear between the map rim and the panel edge
+
         private readonly Plane groundPlane = new Plane(Vector3.up, Vector3.zero);
         private readonly Dictionary<NetworkBehaviour, RectTransform> dots =
             new Dictionary<NetworkBehaviour, RectTransform>();
@@ -86,7 +89,10 @@ namespace TankIO
             Rect rect = panelRect.rect;
             float normalizedX = Mathf.InverseLerp(bounds.minX, bounds.maxX, worldPosition.x);
             float normalizedZ = Mathf.InverseLerp(bounds.minZ, bounds.maxZ, worldPosition.z);
-            return new Vector2(normalizedX * rect.width, normalizedZ * rect.height);
+            return new Vector2(
+                padding + normalizedX * (rect.width - 2f * padding),
+                padding + normalizedZ * (rect.height - 2f * padding)
+            );
         }
 
         // the viewport's ground footprint as a box, the "you are here"
@@ -122,8 +128,16 @@ namespace TankIO
                 return;
             Rect rect = panelRect.rect;
             MapBounds bounds = TileGrid.Instance.CalculateWorldMapBounds();
-            float worldX = Mathf.Lerp(bounds.minX, bounds.maxX, (localPoint.x - rect.xMin) / rect.width);
-            float worldZ = Mathf.Lerp(bounds.minZ, bounds.maxZ, (localPoint.y - rect.yMin) / rect.height);
+            float worldX = Mathf.Lerp(
+                bounds.minX,
+                bounds.maxX,
+                (localPoint.x - rect.xMin - padding) / (rect.width - 2f * padding)
+            );
+            float worldZ = Mathf.Lerp(
+                bounds.minZ,
+                bounds.maxZ,
+                (localPoint.y - rect.yMin - padding) / (rect.height - 2f * padding)
+            );
             CameraController.Instance.CenterOn(new Vector3(worldX, 0f, worldZ)); // CenterOn clamps, so a click past the rim lands at the edge
         }
 

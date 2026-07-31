@@ -25,10 +25,6 @@ namespace TankIO
         [SerializeField, Min(0.01f)]
         private float tileSize = 1f;
 
-        [Header("Shape")]
-        [SerializeField]
-        private bool discShaped = true;
-
         private TileData[,] tiles;
 
         public int Width
@@ -72,6 +68,8 @@ namespace TankIO
         void Awake()
         {
             Instance = this;
+            if (LaunchArgs.TryGetInt("-mapSize", out int size)) // before build, see if server passed any map size. RMB TO SET CLIENT MAP SIZE ALSO, this is for testing only
+                width = height = Mathf.Max(1, size);
             BuildTiles();
         }
 
@@ -105,8 +103,6 @@ namespace TankIO
         {
             if (!IsInsideGrid(tile))
                 return false;
-            if (!discShaped)
-                return true;
             float radius = Radius;
             return (TileCentreOffset(tile) - CenterPoint).sqrMagnitude <= radius * radius;
         }
@@ -155,35 +151,18 @@ namespace TankIO
             return tile.x >= 0 && tile.x < width && tile.y >= 0 && tile.y < height;
         }
 
-        // grid extents as a world AABB, accounting for rotation (a 45deg-rotated grid
-        // spans wider on X/Z). consumed by the camera for clamping.
+        // a disc grid's playable area is the disc, not the rect. its AABB needs no corner walk because a circle spans the same in any rotation.
         public MapBounds CalculateWorldMapBounds()
         {
-            GridCornersBeforeTransform(out float x0, out float x1, out float z0, out float z1);
-
-            Vector3[] corners =
+            Vector3 center = transform.TransformPoint(Vector3.zero);
+            float worldRadius = transform.TransformVector(new Vector3(Radius * tileSize, 0f, 0f)).magnitude;
+            return new MapBounds
             {
-                transform.TransformPoint(new Vector3(x0, 0f, z0)),
-                transform.TransformPoint(new Vector3(x0, 0f, z1)),
-                transform.TransformPoint(new Vector3(x1, 0f, z0)),
-                transform.TransformPoint(new Vector3(x1, 0f, z1)),
+                minX = center.x - worldRadius,
+                maxX = center.x + worldRadius,
+                minZ = center.z - worldRadius,
+                maxZ = center.z + worldRadius
             };
-
-            var b = new MapBounds
-            {
-                minX = float.MaxValue,
-                maxX = float.MinValue,
-                minZ = float.MaxValue,
-                maxZ = float.MinValue
-            };
-            foreach (var c in corners)
-            {
-                b.minX = Mathf.Min(b.minX, c.x);
-                b.maxX = Mathf.Max(b.maxX, c.x);
-                b.minZ = Mathf.Min(b.minZ, c.z);
-                b.maxZ = Mathf.Max(b.maxZ, c.z);
-            }
-            return b;
         }
 
 #if UNITY_EDITOR

@@ -17,32 +17,24 @@ namespace TankIO
             if (networkManager == null)
                 return; // not spawned yet, or already torn down
 
+            if (networkManager.IsClient || networkManager.IsServer)
+                return; // session started: the panel's job is done until the next shutdown
+
             GUILayout.BeginArea(new Rect(Screen.width - 210f, 10f, 200f, 200f)); // top-right, clear of the canvas HUD
 
-            if (networkManager.IsClient || networkManager.IsServer)
+            if (GUILayout.Button("host"))
+                networkManager.StartHost();
+            if (GUILayout.Button("server"))
+                networkManager.StartServer();
+            GUILayout.BeginHorizontal();
+            address = GUILayout.TextField(address);
+            port = GUILayout.TextField(port, GUILayout.Width(50f));
+            GUILayout.EndHorizontal();
+            if (GUILayout.Button("client") && ushort.TryParse(port, out ushort parsedPort))
             {
-                GUILayout.Label(networkManager.IsServer ? "server" : "client");
-                if (networkManager.IsServer) // the connected list is server-only
-                    GUILayout.Label("clients: " + networkManager.ConnectedClientsIds.Count);
-                if (GUILayout.Button("shutdown"))
-                    networkManager.Shutdown();
-            }
-            else
-            {
-                if (GUILayout.Button("host"))
-                    networkManager.StartHost();
-                if (GUILayout.Button("server"))
-                    networkManager.StartServer();
-                GUILayout.BeginHorizontal();
-                address = GUILayout.TextField(address);
-                port = GUILayout.TextField(port, GUILayout.Width(50f));
-                GUILayout.EndHorizontal();
-                if (GUILayout.Button("client") && ushort.TryParse(port, out ushort parsedPort))
-                {
-                    // the transport asset stays on localhost; the target server is set here per session
-                    networkManager.GetComponent<UnityTransport>().SetConnectionData(address, parsedPort);
-                    networkManager.StartClient();
-                }
+                // the transport asset stays on localhost; the target server is set here per session
+                networkManager.GetComponent<UnityTransport>().SetConnectionData(address, parsedPort);
+                networkManager.StartClient();
             }
 
             GUILayout.EndArea();

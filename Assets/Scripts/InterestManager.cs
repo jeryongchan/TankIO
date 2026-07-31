@@ -26,6 +26,13 @@ namespace TankIO
         private NetworkManager network;
         private float nextRefreshTime;
 
+        private const float GizmoHeight = 1f; // off the ground so the lines dont z-fight the terrain
+
+        // gizmo state. the drawn rect is the last one sent, which is what the server filters against
+        private Rect lastSentRect;
+        private bool hasSentRect;
+        private readonly Vector3[] viewportCorners = new Vector3[4];
+
         void Awake()
         {
             Instance = this;
@@ -143,8 +150,7 @@ namespace TankIO
         // the viewport's four corners projected onto the ground, expanded by the margin
         void SendWatchRect()
         {
-            Camera camera = Camera.main;
-            if (camera == null)
+            if (!TryProjectViewportCorners(viewportCorners))
                 return;
             if (CameraController.Lod == LodTier.Far)
             {
@@ -157,9 +163,7 @@ namespace TankIO
             float maxZ = float.NegativeInfinity;
             for (int cornerIndex = 0; cornerIndex < 4; cornerIndex++)
             {
-                Ray ray = camera.ViewportPointToRay(new Vector3(cornerIndex & 1, cornerIndex >> 1, 0f));
-                groundPlane.Raycast(ray, out float distance);
-                Vector3 corner = ray.GetPoint(distance);
+                Vector3 corner = viewportCorners[cornerIndex];
                 minX = Mathf.Min(minX, corner.x);
                 maxX = Mathf.Max(maxX, corner.x);
                 minZ = Mathf.Min(minZ, corner.z);
@@ -173,8 +177,61 @@ namespace TankIO
             );
         }
 
+        // the viewport's four ground hits in perimeter order; false when there is no camera
+        bool TryProjectViewportCorners(Vector3[] corners)
+        {
+            Camera camera = Camera.main;
+            if (camera == null)
+                return false;
+            for (int cornerIndex = 0; cornerIndex < 4; cornerIndex++)
+            {
+                int viewportX = cornerIndex == 1 || cornerIndex == 2 ? 1 : 0; // (0,0) (1,0) (1,1) (0,1)
+                int viewportY = cornerIndex >> 1;
+                Ray ray = camera.ViewportPointToRay(new Vector3(viewportX, viewportY, 0f));
+                groundPlane.Raycast(ray, out float distance);
+                corners[cornerIndex] = ray.GetPoint(distance);
+            }
+            return true;
+        }
+
+#if UNITY_EDITOR
+        void OnDrawGizmos()
+        {
+            // client-only: the host is never interest-filtered
+            if (network == null || !network.IsConnectedClient || network.IsServer || !interestManagement)
+                return;
+            if (CameraController.Lod == LodTier.Far)
+                return; // the sent rect is empty
+            const float LineWidth = 5f; // screen pixels
+            if (TryProjectViewportCorners(viewportCorners))
+            {
+                UnityEditor.Handles.color = Color.yellow;
+                for (int cornerIndex = 0; cornerIndex < 4; cornerIndex++)
+                {
+                    Vector3 from = viewportCorners[cornerIndex] + Vector3.up * GizmoHeight;
+                    Vector3 to = viewportCorners[(cornerIndex + 1) % 4] + Vector3.up * GizmoHeight;
+                    UnityEditor.Handles.DrawLine(from, to, LineWidth);
+                }
+            }
+            if (hasSentRect && lastSentRect.width > 0f)
+            {
+                UnityEditor.Handles.color = Color.magenta;
+                Vector3 cornerA = new Vector3(lastSentRect.xMin, GizmoHeight, lastSentRect.yMin);
+                Vector3 cornerB = new Vector3(lastSentRect.xMax, GizmoHeight, lastSentRect.yMin);
+                Vector3 cornerC = new Vector3(lastSentRect.xMax, GizmoHeight, lastSentRect.yMax);
+                Vector3 cornerD = new Vector3(lastSentRect.xMin, GizmoHeight, lastSentRect.yMax);
+                UnityEditor.Handles.DrawLine(cornerA, cornerB, LineWidth);
+                UnityEditor.Handles.DrawLine(cornerB, cornerC, LineWidth);
+                UnityEditor.Handles.DrawLine(cornerC, cornerD, LineWidth);
+                UnityEditor.Handles.DrawLine(cornerD, cornerA, LineWidth);
+            }
+        }
+#endif
+
         void SendRect(float minX, float minZ, float width, float height)
         {
+            lastSentRect = new Rect(minX, minZ, width, height);
+            hasSentRect = true;
             using FastBufferWriter writer = new FastBufferWriter(16, Allocator.Temp);
             // Allocator.Temp is a buffer which lives outside C# managed heap, so the GC never see and collect it.
             // also the fastest unmanaged memory allocator, designed for short-lived data that lives for one frame or a single job scope. imported from unity.Collections

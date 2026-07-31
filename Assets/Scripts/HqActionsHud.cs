@@ -18,9 +18,13 @@ namespace TankIO
         void LateUpdate()
         {
             HqController hq = PlayerCommander.Instance.SelectedHq; // only an own HQ can be selected
-            // hidden while the base is moving
+            // hidden while the base is moving, and outside the Near tier along with every other command
             bool parked = hq != null && hq.IsParked(NetworkManager.Singleton.ServerTime.Time);
-            moveButton.gameObject.SetActive(parked && CameraController.TryPin(transform, hq.transform.position));
+            moveButton.gameObject.SetActive(
+                parked
+                    && CameraController.Lod == LodTier.Near
+                    && CameraController.TryPin(transform, hq.transform.position)
+            );
         }
     }
 }

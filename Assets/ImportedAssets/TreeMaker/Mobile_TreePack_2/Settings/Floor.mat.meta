@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 086a22d27098481478655f61e3eb6091
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 373438
+  packageName: Mobile Tree Pack 2 (for URP)
+  packageVersion: 1.2
+  assetPath: Assets/TreeMaker/Mobile_TreePack_2/Settings/Floor.mat
+  uploadId: 924988

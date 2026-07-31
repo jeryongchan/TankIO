@@ -18,14 +18,17 @@ namespace TankIO
         private readonly Mesh mesh;
         private readonly Material[] materials; // one per submesh (trees split trunk and leaves)
         private readonly ShadowCastingMode shadowCastingMode;
+        private readonly DrawStats stats; // debug overlay counts; null = off
         private readonly List<Region> regions = new List<Region>();
         private readonly Plane[] frustumPlanes = new Plane[6]; // reused: the allocating overload would put 6 planes on the heap per region-set per frame
 
-        public InstancedMeshDrawer(Mesh mesh, Material[] materials, ShadowCastingMode shadowCastingMode)
+        public InstancedMeshDrawer(Mesh mesh, Material[] materials, ShadowCastingMode shadowCastingMode, string statsGroup = null)
         {
             this.mesh = mesh;
             this.materials = materials;
             this.shadowCastingMode = shadowCastingMode;
+            if (statsGroup != null)
+                stats = GetOrCreateGroup(statsGroup);
         }
 
         public void AddRegion(Matrix4x4[] matrices, Bounds bounds)
@@ -74,12 +77,20 @@ namespace TankIO
         {
             GeometryUtility.CalculateFrustumPlanes(camera, frustumPlanes);
 
+            bool countForOverlay = stats != null && camera == Camera.main;
+            if (countForOverlay)
+                PublishOnNewFrame();
+
             int submeshCount = Mathf.Min(materials.Length, mesh.subMeshCount);
             foreach (var region in regions)
             {
+                if (countForOverlay)
+                    stats.TotalAcc += region.matrices.Length;
                 // pre-test regions first to save cost; even though rendermeshinstance can cull for us, it still cost a lot to call when we pass in the matrices.
                 if (!GeometryUtility.TestPlanesAABB(frustumPlanes, region.bounds))
                     continue;
+                if (countForOverlay)
+                    stats.DrawnAcc += region.matrices.Length;
                 for (int submesh = 0; submesh < submeshCount; submesh++)
                 {
                     var renderParams = new RenderParams(materials[submesh])
@@ -90,6 +101,47 @@ namespace TankIO
                     };
                     Graphics.RenderMeshInstanced(renderParams, mesh, submesh, region.matrices);
                 }
+            }
+        }
+
+        // debug: drawn/planted counts per group for RuntimeStatsOverlay, main camera only
+
+        public class DrawStats
+        {
+            public string Name;
+            public int Drawn; // published last frame
+            public int Total;
+            internal int DrawnAcc;
+            internal int TotalAcc;
+        }
+
+        private static readonly List<DrawStats> statGroups = new List<DrawStats>();
+        public static IReadOnlyList<DrawStats> StatGroups { get { return statGroups; } }
+        public static int LastFrameStamp { get { return frameStamp; } } // stale stamp = nothing drawing
+        private static int frameStamp = -1;
+
+        static DrawStats GetOrCreateGroup(string name)
+        {
+            for (int index = 0; index < statGroups.Count; index++)
+                if (statGroups[index].Name == name)
+                    return statGroups[index];
+            var group = new DrawStats { Name = name };
+            statGroups.Add(group);
+            return group;
+        }
+
+        static void PublishOnNewFrame()
+        {
+            if (Time.frameCount == frameStamp)
+                return;
+            frameStamp = Time.frameCount;
+            for (int index = 0; index < statGroups.Count; index++)
+            {
+                DrawStats group = statGroups[index];
+                group.Drawn = group.DrawnAcc;
+                group.Total = group.TotalAcc;
+                group.DrawnAcc = 0;
+                group.TotalAcc = 0;
             }
         }
     }

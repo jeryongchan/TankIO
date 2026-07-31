@@ -32,6 +32,26 @@ namespace TankIO
         private double holdCheckTimer;
         private Vector2Int centerTile;
 
+        [SerializeField]
+        private GameObject buildingBody;
+
+        [SerializeField]
+        private Color neutralIconColor = new Color(0.8f, 0.8f, 0.8f); // unheld
+
+        [SerializeField]
+        private Color ownIconColor = new Color(0f, 1f, 0.13f);
+
+        [SerializeField]
+        private Color enemyIconColor = new Color(1f, 0.066f, 0f);
+
+        private Color appliedIconColor = new Color(0f, 0f, 0f, 0f); // unmatchable, so the first Render always tints
+
+        [SerializeField]
+        private MeshRenderer midIcon; // the flat square standing in for the pad at Mid
+
+        [SerializeField]
+        private MeshRenderer farIcon; // the dot it shrinks to at Far
+
         public Vector2Int CenterTile
         {
             get { return centerTile; }
@@ -55,7 +75,35 @@ namespace TankIO
                 return;
             if (IsServer)
                 UpdateHolder(NetworkManager.ServerTime.Time);
+#if !UNITY_SERVER
+            Render();
+#endif
         }
+
+#if !UNITY_SERVER
+        // unlike the HQ this only swaps stand-ins: the pad never moves. the tint is re-derived per
+        // frame because the holder changes mid-match, where an HQ's commander never does.
+        void Render()
+        {
+            LodTier lod = CameraController.Lod;
+            buildingBody.SetActive(lod == LodTier.Near);
+            midIcon.enabled = lod == LodTier.Mid;
+            farIcon.enabled = lod == LodTier.Far;
+            if (lod == LodTier.Near)
+                return;
+
+            HoldState state = replicatedHoldState.Value;
+            Color iconColor = !state.Held ? neutralIconColor
+                : state.HolderCommanderId == NetworkManager.LocalClientId ? ownIconColor
+                : enemyIconColor;
+            if (iconColor == appliedIconColor)
+                return;
+
+            appliedIconColor = iconColor;
+            LodIcon.Tint(midIcon, iconColor);
+            LodIcon.Tint(farIcon, iconColor);
+        }
+#endif
 
         // capture is "whose HQ is parked on my centre tile", asked once every 0.3s. no capture timer and
         // no contest state: the HQ move already made taking the centre slow and visible, so a second

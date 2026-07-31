@@ -29,7 +29,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 0.2, y: 0.2, z: 0.2}
+  m_LocalScale: {x: 0.15, y: 0.15, z: 0.15}
   m_ConstrainProportionsScale: 1
   m_Children: []
   m_Father: {fileID: 0}
@@ -103,5 +103,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e098e6fdadb977847a510456e024a7d4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::TankIO.ShellVisual
-  hitMarker: {fileID: 5100001, guid: 5f2a1c40b1e94d2a9d3f6b7c8e0a1203, type: 3}
-  landingMarker: {fileID: 5100001, guid: 5f2a1c40b1e94d2a9d3f6b7c8e0a1204, type: 3}
+  hitMarker: {fileID: 100014, guid: a57a6829db3568c4d9bdc37e9e63c017, type: 3}
+  landingMarker: {fileID: 100002, guid: bc8d2212c2ce5ef459edd17d2d63da64, type: 3}
+  treeMarker: {fileID: 100002, guid: 855f647f81ad9774a905ff23fdc26618, type: 3}

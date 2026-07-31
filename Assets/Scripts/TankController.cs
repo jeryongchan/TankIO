@@ -35,13 +35,19 @@ namespace TankIO
         private GameObject shellPrefab; // local visuals, spawned per machine; neither is a NetworkObject
 
         [SerializeField]
+        private GameObject muzzleFlashPrefab;
+
+        [SerializeField]
+        private GameObject deathExplosionPrefab;
+
+        [SerializeField]
         private GameObject wreckPrefab;
 
         [SerializeField]
-        private Material ownIconMaterial; // the Mid-tier diamond, colored by who commands the tank
+        private Color ownIconColor = new Color(0f, 1f, 0.13f); // tints the shared icon material
 
         [SerializeField]
-        private Material enemyIconMaterial;
+        private Color enemyIconColor = new Color(1f, 0.066f, 0f);
 
         [SerializeField]
         private MeshRenderer midIcon; // the flat quad standing in for the hull at Mid
@@ -163,7 +169,7 @@ namespace TankIO
 #if !UNITY_SERVER
             // the icon is a child, so it lands in here too; Render writes it after SetVisible and wins
             renderers = GetComponentsInChildren<Renderer>();
-            midIcon.sharedMaterial = CommandedByLocalPlayer ? ownIconMaterial : enemyIconMaterial;
+            LodIcon.Tint(midIcon, CommandedByLocalPlayer ? ownIconColor : enemyIconColor);
 #endif
 
             if (IsServer)
@@ -217,6 +223,8 @@ namespace TankIO
         void PredictDrive(Vector2Int goal, bool autoAttack)
         {
             lastIssuedCommandId++;
+            if (noPrediction)
+                return;
             double clickTime = NetworkManager.ServerTime.Time;
             Trip currentTrip = predictedTrip ?? serverTrip;
             Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
@@ -237,6 +245,8 @@ namespace TankIO
         // drive to a firing position. a unit and a tree differ only in the aim, which the caller sets.
         void PredictAttackApproach(Vector3 targetPosition, double clickTime)
         {
+            if (noPrediction)
+                return;
             Trip currentTrip = predictedTrip ?? serverTrip;
             Vector3 startPosition = PositionAtTime(currentTrip, clickTime);
             Vector2Int[] path =
@@ -259,6 +269,8 @@ namespace TankIO
         public void MoveTo(Vector2Int goal)
         {
             PredictDrive(goal, false);
+            if (noPrediction)
+                clickedGoal = TileGrid.Instance.TileToWorldCenter(goal);
             SubmitMoveCommandRpc(goal, lastIssuedCommandId);
         }
 
@@ -267,6 +279,8 @@ namespace TankIO
         public void AttackMoveTo(Vector2Int goal)
         {
             PredictDrive(goal, true);
+            if (noPrediction)
+                clickedGoal = TileGrid.Instance.TileToWorldCenter(goal);
             SubmitAttackMoveCommandRpc(goal, lastIssuedCommandId);
         }
 
@@ -343,8 +357,11 @@ namespace TankIO
             lastIssuedCommandId++;
             double clickTime = NetworkManager.ServerTime.Time;
             PredictAttackApproach(target.PositionAtTime(clickTime), clickTime);
-            predictedTargetId = target.NetworkObjectId; // the turret starts its traverse now; the traverse masks the round trip
-            predictedTargetTile = NoTile;
+            if (!noPrediction)
+            {
+                predictedTargetId = target.NetworkObjectId; // the turret starts its traverse now; the traverse masks the round trip
+                predictedTargetTile = NoTile;
+            }
             SubmitAttackCommandRpc(target.NetworkObjectId, lastIssuedCommandId);
         }
 
@@ -352,7 +369,9 @@ namespace TankIO
         // just a trip plus a server flag, so any other click overwrites both and cancels the recall
         public void ReturnToHq(HqController hq)
         {
-            PredictDrive(RecallGoal(hq), false);
+            Trip currentTrip = predictedTrip ?? serverTrip;
+            Vector3 startPosition = PositionAtTime(currentTrip, NetworkManager.ServerTime.Time);
+            PredictDrive(RecallGoal(hq, startPosition), false);
             SubmitRecallCommandRpc(lastIssuedCommandId);
         }
 
@@ -376,17 +395,26 @@ namespace TankIO
                 return;
             }
             recallActive = true;
-            WriteTripState(startPosition, PathOrStop(serverTrip, startPosition, RecallGoal(hq), now), now, commandId);
+            WriteTripState(
+                startPosition,
+                PathOrStop(serverTrip, startPosition, RecallGoal(hq, startPosition), now),
+                now,
+                commandId
+            );
         }
 
-        // the nearest free tile beside the footprint. the spiral skips the HQ's own parked 3x3, so the
-        // first candidates are exactly the ring around it.
-        Vector2Int RecallGoal(HqController hq)
+        // the free tile beside the footprint nearest the tank: it parks on the side it approached from.
+        // the spiral skips the HQ's own parked 3x3, so the first candidates are exactly the ring around it.
+        // fromPosition is each machine's own idea of where the tank is, so owner and server may pick
+        // different tiles on a near tie, like any predicted trip.
+        Vector2Int RecallGoal(HqController hq, Vector3 fromPosition)
         {
+            TileGrid.Instance.WorldToTile(fromPosition, out Vector2Int fromTile); // tile, not the raw point: the two only disagree while straddling a boundary
             TripReservations.TryNearestUnclaimedParkTile(
                 hq.HomeTile,
                 HqController.FootprintRadius + 2,
                 NetworkObjectId,
+                fromTile,
                 out Vector2Int tile
             );
             return tile; // on total failure this is the footprint centre: the path fails, the tank stops, the recall check retries
@@ -463,8 +491,11 @@ namespace TankIO
             lastIssuedCommandId++;
             double clickTime = NetworkManager.ServerTime.Time;
             PredictAttackApproach(TileGrid.Instance.TileToWorldCenter(treeTile), clickTime);
-            predictedTargetId = 0;
-            predictedTargetTile = treeTile;
+            if (!noPrediction)
+            {
+                predictedTargetId = 0;
+                predictedTargetTile = treeTile;
+            }
             SubmitAttackTreeRpc(treeTile, lastIssuedCommandId);
         }
 
@@ -674,7 +705,7 @@ namespace TankIO
             if (besideFootprint)
                 return; // still rolling toward a valid spot
             // the trip no longer ends at home (HQ moved, or the approach degraded to a stop): try again
-            Vector2Int goal = RecallGoal(hq);
+            Vector2Int goal = RecallGoal(hq, myPosition);
             Vector2Int[] path = ComputePath(myPosition, goal, now);
             if (path.Length == 0)
                 return; // no route this check; retry next
@@ -875,6 +906,8 @@ namespace TankIO
         {
             // runs on the dying tank, so the commander id costs nothing to send; an HQ move finds this wreck by it
             WreckVisual.Spawn(wreckPrefab, CommanderId, deathPosition, homePosition, startTime, WreckReturnSpeed);
+            if (deathExplosionPrefab != null && CameraController.Lod == LodTier.Near)
+                Instantiate(deathExplosionPrefab, deathPosition, deathExplosionPrefab.transform.rotation);
         }
 
         // each machine flies its own local shell from its own drawn barrel tip.
@@ -885,7 +918,7 @@ namespace TankIO
         void FiredRpc(int shellId, ulong targetObjectId, Vector3 aimPoint, double fireTime)
         {
             IShellTarget target = ShellSystem.TargetFromObjectId(targetObjectId);
-            if (target != null)
+            if (target != null && !noAimOverwrite)
                 aimPoint = target.DrawnPosition;
             // the tracking turret may still be mid-swing; a shot snaps it onto the aim point so the shell never exits sideways
             Vector3 aimDirection = aimPoint - transform.position;
@@ -896,6 +929,15 @@ namespace TankIO
                 turretWorldRotation = turret.rotation; // or RenderTurret would restore the pre-snap cache and undo the snap
             }
             ShellVisual.Spawn(shellPrefab, shellId, muzzle.position, aimPoint, fireTime, ShellSpeed, TankHitRadius);
+            SpawnMuzzleFlash();
+        }
+
+        // parented to the muzzle: the turret keeps tracking during the flash
+        void SpawnMuzzleFlash()
+        {
+            if (muzzleFlashPrefab == null || CameraController.Lod != LodTier.Near)
+                return;
+            Instantiate(muzzleFlashPrefab, muzzle);
         }
 
         // a shell reached a tank before its aim point. the fraction says when along the flight, so an event arriving
@@ -934,6 +976,8 @@ namespace TankIO
                 StartTime = startTime,
                 AcknowledgedCommandId = commandId
             };
+            if (path.Length > 0)
+                LogTripBytes(startPosition, path, commandId);
             if (repathTanksCrossingParkTile && tanksToRepath.Count > 0)
             {
                 foreach (ulong tankId in tanksToRepath)
@@ -943,6 +987,26 @@ namespace TankIO
                         crossingTank.RepathAroundPark(startTime);
                 }
             }
+        }
+
+        // measurement aid for the report's march-bytes figure; every tank writes here, so filter the console by "TripBytes".
+        // rows repeating a cmd are server rewrites (targeting, chase retry, park repath), so a march costs their sum, not one row.
+        // 28 = StartPosition 12 + tileCount 4 + StartTime 8 + AcknowledgedCommandId 4, and 8 per tile is one Vector2Int.
+        void LogTripBytes(Vector3 startPosition, Vector2Int[] path, int commandId)
+        {
+            int bytes = 28 + 8 * path.Length;
+            float distance = 0f;
+            Vector3 previousPoint = startPosition;
+            for (int index = 0; index < path.Length; index++)
+            {
+                Vector3 tileCentre = TileGrid.Instance.TileToWorldCenter(path[index]);
+                distance += Vector3.Distance(previousPoint, tileCentre);
+                previousPoint = tileCentre;
+            }
+            Debug.Log(
+                $"TripBytes tank={NetworkObjectId} cmd={commandId} tiles={path.Length}"
+                + $" bytes={bytes} distance={distance:F1} seconds={distance / moveSpeed:F1}"
+            );
         }
 
         // another tank parked on a tile this trip crosses later; the park was written after this trip,
@@ -982,6 +1046,7 @@ namespace TankIO
                 if (predictedTrip != null)
                     serverTrip.startTime = predictedTrip.startTime;
                 predictedTrip = null;
+                clickedGoal = null;
             }
         }
 
@@ -1027,6 +1092,22 @@ namespace TankIO
             if (serverTrip == null)
                 return transform.position; // NGO asks CheckObjectVisibility before OnNetworkSpawn writes the trip; the spawner already placed us there
             return PositionAtTime(serverTrip, time);
+        }
+
+        // the goal of the trip the renderer is driving (the owner's prediction until the ack lands,
+        // so it never lags the click), or null once arrived. the command line draws from this.
+        public Vector3? ActiveCommandGoal
+        {
+            get
+            {
+                if (clickedGoal != null)
+                    return clickedGoal;
+                Trip trip = predictedTrip ?? serverTrip;
+                if (trip == null)
+                    return null;
+                Vector3 end = trip.EndPoint;
+                return PositionAtTime(trip, NetworkManager.ServerTime.Time) == end ? null : (Vector3?)end;
+            }
         }
 
         // the pure function: where along the trip the tank is at the given time.
@@ -1134,7 +1215,7 @@ namespace TankIO
             // the owner's own belief about auto-attack wins over the not-yet-updated replicated flag.
             // CommandedByLocalPlayer, not IsOwner: a host network-owns bot tanks but never predicts for them.
             bool followServerAim = predictedTrip != null ? predictedAutoAttack : autoAttackActive.Value;
-            bool useOwnCommand = CommandedByLocalPlayer && !followServerAim;
+            bool useOwnCommand = CommandedByLocalPlayer && !followServerAim && !noPrediction;
             IShellTarget target = ShellSystem.TargetFromObjectId(
                 useOwnCommand ? predictedTargetId : currentTargetId.Value
             );
@@ -1198,5 +1279,10 @@ namespace TankIO
                 serializer.SerializeValue(ref AcknowledgedCommandId);
             }
         }
+
+        // debug flags for the latency demo captures
+        [SerializeField] private bool noPrediction;
+        [SerializeField] private bool noAimOverwrite;
+        private Vector3? clickedGoal; // shows the click while noPrediction waits out the ack
     }
 }

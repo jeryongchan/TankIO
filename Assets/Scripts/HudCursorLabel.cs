@@ -12,18 +12,24 @@ namespace TankIO
         [SerializeField]
         private TMP_Text text; // pivot (0,1): hangs down-right of the cursor
 
+        [SerializeField]
+        private Color allowedColor = Color.green;
+
+        [SerializeField]
+        private Color blockedColor = Color.red;
+
         void Awake()
         {
             instance = this;
             text.enabled = false;
         }
 
-        public static void Show(string message, Color color, Vector2 mouseScreenPosition)
+        public static void Show(string message, bool allowed, Vector2 mouseScreenPosition)
         {
             if (instance == null)
                 return;
             instance.text.text = message;
-            instance.text.color = color;
+            instance.text.color = allowed ? instance.allowedColor : instance.blockedColor;
             instance.text.rectTransform.position = new Vector3(
                 mouseScreenPosition.x + 15f,
                 mouseScreenPosition.y + 10f,

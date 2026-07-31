@@ -18,6 +18,9 @@ namespace TankIO
         [SerializeField, Range(0f, 0.5f)]
         private float scaleJitter = 0.1f;
 
+        [SerializeField, Range(0f, 1f)]
+        private float sinkJitter = 0.2f; // max sink below the ground plane, hiding the open trunk bottom
+
         [SerializeField, Min(1)]
         private int regionSize = 16; // tiles per region. one culling test each
 
@@ -155,6 +158,7 @@ namespace TankIO
                     float jitterZ = rng.NextFloat(-1f, 1f);
                     float rotationY = rng.NextFloat(360f);
                     float jitterScale = 1f + rng.NextFloat(-1f, 1f) * scaleJitter;
+                    float sink = rng.NextFloat(sinkJitter);
 
                     Vector3 local =
                         tileGrid.TileToLocalCenter(tile)
@@ -167,7 +171,11 @@ namespace TankIO
                     // child's own transform, which Instantiate used to apply
                     matrices.Add(
                         gridToWorld
-                            * Matrix4x4.TRS(local, Quaternion.Euler(0f, rotationY, 0f), Vector3.one * jitterScale)
+                            * Matrix4x4.TRS(
+                                local + Vector3.down * sink,
+                                Quaternion.Euler(0f, rotationY, 0f),
+                                Vector3.one * jitterScale
+                            )
                             * renderers[variant].transform.localToWorldMatrix
                     );
                     if (!iconRegions.TryGetValue(key, out var icons))
@@ -190,7 +198,7 @@ namespace TankIO
             for (int i = 0; i < renderers.Length; i++)
             {
                 Mesh mesh = renderers[i].GetComponent<MeshFilter>().sharedMesh; // validated in ResolveRenderers
-                drawers[i] = new InstancedMeshDrawer(mesh, renderers[i].sharedMaterials, ShadowCastingMode.On);
+                drawers[i] = new InstancedMeshDrawer(mesh, renderers[i].sharedMaterials, ShadowCastingMode.On, "Trees");
                 float margin = mesh.bounds.size.magnitude * renderers[i].transform.lossyScale.x * (1f + scaleJitter);
                 drawers[i].AddRegions(regions[i], margin);
             }
@@ -204,7 +212,8 @@ namespace TankIO
             iconDrawer = new InstancedMeshDrawer(
                 Resources.GetBuiltinResource<Mesh>("Quad.fbx"),
                 new[] { iconMaterial },
-                ShadowCastingMode.Off
+                ShadowCastingMode.Off,
+                "Tree Icons"
             );
             iconDrawer.AddRegions(iconRegions, iconScale);
         }

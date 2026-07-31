@@ -8,7 +8,7 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: GarrisonTracer
-  m_Shader: {fileID: 4800000, guid: 650dd9526735d5b46b79224bc6e94025, type: 3}
+  m_Shader: {fileID: 4800000, guid: b71868cc8f41a2a499986466280dc7a2, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
@@ -17,8 +17,7 @@ Material:
   m_EnableInstancingVariants: 0
   m_DoubleSidedGI: 0
   m_CustomRenderQueue: -1
-  stringTagMap:
-    RenderType: Opaque
+  stringTagMap: {}
   disabledShaderPasses:
   - MOTIONVECTORS
   m_LockedProperties: 
@@ -42,19 +41,30 @@ Material:
     - _BlendOp: 0
     - _Cull: 2
     - _Cutoff: 0.5
+    - _DashDensity: 0.6
     - _DstBlend: 0
     - _DstBlendAlpha: 0
+    - _EdgeSoftness: 0.6
+    - _EndFade: 0.08
+    - _LineLength: 10
     - _QueueOffset: 0
     - _SampleGI: 0
+    - _ScrollSpeed: 15.8
     - _Smoothness: 0.2
+    - _SpeedVariance: 0.4
     - _SrcBlend: 1
     - _SrcBlendAlpha: 1
+    - _StartFade: 0.12
+    - _StrandCount: 3
+    - _StrandVariance: 0.559
+    - _StrandWidth: 0.38
     - _Surface: 0
+    - _TailSharpness: 10.45
     - _XRMotionVectorsPass: 1
     - _ZWrite: 1
     m_Colors:
     - _BaseColor: {r: 1, g: 0.85, b: 0.2, a: 1}
-    - _Color: {r: 1, g: 0.85, b: 0.19999996, a: 1}
+    - _Color: {r: 170.89003, g: 163.67415, b: 86.51978, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
 --- !u!114 &5363283652605729860

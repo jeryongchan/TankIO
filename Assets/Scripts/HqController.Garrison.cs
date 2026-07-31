@@ -9,7 +9,7 @@ namespace TankIO
     {
         // garrison fire: undodgeable, single-victim, troop-scaled. only tanks currently attacking this
         // owner's HQ or tanks are valid victims. driving past costs nothing, attacking is answered.
-        private const float GarrisonRange = 10f; // more range than tank so can outrange tank.
+        private const float GarrisonRange = 8.5f; // more range than tank so can outrange tank.
         private const float GarrisonDamagePerTroopPerSecond = 0.02f; // full 1000-troop HQ = 20 dps, about four full tanks
         private const double GarrisonCheckInterval = 0.3;
 
@@ -19,6 +19,17 @@ namespace TankIO
 
         [SerializeField]
         private Material garrisonTracerMaterial; // the line is built in code, so this is all the look it has
+
+        [SerializeField]
+        private Transform garrisonMuzzle; // the roof turret
+
+        [SerializeField]
+        private GameObject garrisonImpactPrefab; // looping sparks: there is no per-hit event to burst from
+
+        [SerializeField]
+        private float garrisonImpactOffset = 0.4f; // from the victim's centre toward the firing HQ, onto the face the rounds strike
+
+        private ParticleSystem garrisonImpact; // one instance, moved onto the current victim
 
         // who has attacked this commander recently: time their tank shell last hit us.
         // only tank shells mark aggression, garrison fire never does, so an HQ defending itself is not considered aggressor. server only.
@@ -108,17 +119,19 @@ namespace TankIO
             return nearest;
         }
 
-        // debug placeholder for the real bullet tracer volley.
         void RenderGarrisonTracer()
         {
             IShellTarget victim = null;
-            // no detail means this client is not watching the area, so there is no tracer to draw
-            if (Detail != null)
+            // no detail means this client is not watching the area, so there is no tracer to draw.
+            // also gated to Near: past it HQs are icons and victims are not drawn
+            if (Detail != null && CameraController.Lod == LodTier.Near)
                 victim = ShellSystem.TargetFromObjectId(Detail.GarrisonVictimId);
             if (victim == null)
             {
                 if (garrisonTracer != null)
                     garrisonTracer.enabled = false;
+                if (garrisonImpact != null)
+                    garrisonImpact.Stop(true, ParticleSystemStopBehavior.StopEmitting);
                 return;
             }
             if (garrisonTracer == null)
@@ -127,12 +140,37 @@ namespace TankIO
                 tracerObject.transform.SetParent(transform, false);
                 garrisonTracer = tracerObject.AddComponent<LineRenderer>();
                 garrisonTracer.sharedMaterial = garrisonTracerMaterial; // the material carries the colour; an unlit shader ignores LineRenderer's vertex colours
-                garrisonTracer.startWidth = garrisonTracer.endWidth = 0.08f;
+                garrisonTracer.startWidth = garrisonTracer.endWidth = 0.25f; // the shader carves this width into strands
                 garrisonTracer.positionCount = 2;
+                garrisonTracer.textureMode = LineTextureMode.Tile; // uv.x counts world units: dashes keep one size at any range
+                // vertex alpha carries 0-1 along the line; Tile mode leaves uv.x in world units
+                garrisonTracer.startColor = new Color(1f, 1f, 1f, 0f);
+                garrisonTracer.endColor = Color.white;
             }
+            Vector3 muzzlePoint = garrisonMuzzle != null
+                ? garrisonMuzzle.position
+                : transform.position + Vector3.up * 1.2f;
+            Vector3 victimPoint = victim.DrawnPosition + Vector3.up * 0.3f;
+
+            // flat, or the line's downward slope tips the spray out of view
+            Vector3 towardMuzzle = muzzlePoint - victimPoint;
+            towardMuzzle.y = 0f;
+            towardMuzzle = towardMuzzle.sqrMagnitude > 0.0001f ? towardMuzzle.normalized : Vector3.forward;
+            Vector3 impactPoint = victimPoint + towardMuzzle * garrisonImpactOffset;
+
             garrisonTracer.enabled = true;
-            garrisonTracer.SetPosition(0, transform.position + Vector3.up * 1.2f);
-            garrisonTracer.SetPosition(1, victim.DrawnPosition + Vector3.up * 0.3f);
+            garrisonTracer.SetPosition(0, muzzlePoint);
+            garrisonTracer.SetPosition(1, impactPoint); // ends at the sparks, not inside the hull
+
+            if (garrisonImpactPrefab == null)
+                return;
+            // parented so it dies with the HQ; placed in world space, since the victim changes
+            if (garrisonImpact == null)
+                garrisonImpact = Instantiate(garrisonImpactPrefab, transform).GetComponent<ParticleSystem>();
+            // sparks come off the armour toward the shooter
+            garrisonImpact.transform.SetPositionAndRotation(impactPoint, Quaternion.LookRotation(towardMuzzle));
+            if (!garrisonImpact.isEmitting)
+                garrisonImpact.Play(true);
         }
     }
 }

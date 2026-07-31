@@ -27,6 +27,9 @@ namespace TankIO
         void Awake()
         {
             Instance = this;
+            // SpawnBots runs on OnServerStarted, so Awake is early enough
+            if (LaunchArgs.TryGetInt("-botCount", out int count))
+                botCount = Mathf.Max(0, count);
         }
 
         // server-side code holding a commander id and calling Execute methods which a human player RPC wraps in

@@ -110,3 +110,8 @@ InitTestScene*.unity*
 /Assets/PBR Ground Materials #2 [[]Dirt, Grass & Rocky[]].meta
 /Assets/JMO Assets/
 /Assets/JMO Assets.meta
+
+# Local recording helpers, not part of the game
+/Assets/Editor/SceneViewRotationLock.cs
+/Assets/Editor/SceneViewRotationLock.cs.meta
+/Assets/Editor.meta

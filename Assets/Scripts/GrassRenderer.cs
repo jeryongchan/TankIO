@@ -132,7 +132,7 @@ namespace TankIO
             }
 
             // Off: the grass shader has no ShadowCaster pass
-            drawer = new InstancedMeshDrawer(mesh, new[] { material }, ShadowCastingMode.Off);
+            drawer = new InstancedMeshDrawer(mesh, new[] { material }, ShadowCastingMode.Off, "Grass");
             // without a margin, a region at the screen edge pops out while its grass is still
             // visible: a chunk reaches past its origin by its scaled extents plus wind sway
             float margin = mesh.bounds.size.magnitude * grassPrefab.transform.localScale.x * (1f + scaleJitter);

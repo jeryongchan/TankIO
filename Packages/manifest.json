@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "com.atteneder.gltfast": "https://github.com/atteneder/glTFast.git",
+    "com.unity.2d.sprite": "1.0.0",
     "com.unity.ai.navigation": "2.0.13",
     "com.unity.collab-proxy": "2.12.4",
     "com.unity.ide.rider": "3.0.38",
@@ -10,6 +11,7 @@
     "com.unity.multiplayer.playmode": "2.0.2",
     "com.unity.multiplayer.tools": "2.2.9",
     "com.unity.netcode.gameobjects": "2.13.0",
+    "com.unity.recorder": "5.1.6",
     "com.unity.render-pipelines.universal": "17.5.0",
     "com.unity.test-framework": "1.7.0",
     "com.unity.timeline": "1.8.12",
