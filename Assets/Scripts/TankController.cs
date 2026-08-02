@@ -976,8 +976,6 @@ namespace TankIO
                 StartTime = startTime,
                 AcknowledgedCommandId = commandId
             };
-            if (path.Length > 0)
-                LogTripBytes(startPosition, path, commandId);
             if (repathTanksCrossingParkTile && tanksToRepath.Count > 0)
             {
                 foreach (ulong tankId in tanksToRepath)
@@ -987,26 +985,6 @@ namespace TankIO
                         crossingTank.RepathAroundPark(startTime);
                 }
             }
-        }
-
-        // measurement aid for the report's march-bytes figure; every tank writes here, so filter the console by "TripBytes".
-        // rows repeating a cmd are server rewrites (targeting, chase retry, park repath), so a march costs their sum, not one row.
-        // 28 = StartPosition 12 + tileCount 4 + StartTime 8 + AcknowledgedCommandId 4, and 8 per tile is one Vector2Int.
-        void LogTripBytes(Vector3 startPosition, Vector2Int[] path, int commandId)
-        {
-            int bytes = 28 + 8 * path.Length;
-            float distance = 0f;
-            Vector3 previousPoint = startPosition;
-            for (int index = 0; index < path.Length; index++)
-            {
-                Vector3 tileCentre = TileGrid.Instance.TileToWorldCenter(path[index]);
-                distance += Vector3.Distance(previousPoint, tileCentre);
-                previousPoint = tileCentre;
-            }
-            Debug.Log(
-                $"TripBytes tank={NetworkObjectId} cmd={commandId} tiles={path.Length}"
-                + $" bytes={bytes} distance={distance:F1} seconds={distance / moveSpeed:F1}"
-            );
         }
 
         // another tank parked on a tile this trip crosses later; the park was written after this trip,

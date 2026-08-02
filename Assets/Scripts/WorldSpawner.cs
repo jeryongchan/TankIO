@@ -17,6 +17,9 @@ namespace TankIO
         [SerializeField]
         private GameObject hqDetailPrefab;
 
+        [SerializeField]
+        private GameObject scoreboardPrefab;
+
         private const int RimMargin = 10; // move spawned players away from rim
 
         void Start()
@@ -65,6 +68,12 @@ namespace TankIO
             GameObject capital = Instantiate(capitalPrefab);
             capital.transform.position = TileGrid.Instance.TileToWorldCenter(center);
             capital.GetComponent<NetworkObject>().Spawn();
+
+            // before the bots: their HQs register scoreboard rows as they spawn
+            if (scoreboardPrefab != null)
+                Instantiate(scoreboardPrefab).GetComponent<NetworkObject>().Spawn();
+            else
+                Debug.LogError("Yet to provide scoreboard prefab, running without one.");
 
             BotManager.Instance.SpawnBots(SpawnHq);
         }

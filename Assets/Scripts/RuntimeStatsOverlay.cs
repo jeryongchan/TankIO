@@ -67,16 +67,17 @@ namespace TankIO
         private readonly List<Row> rows = new List<Row>();
         private readonly StringBuilder valueBuilder = new StringBuilder(64);
         private float smoothedDeltaTime;
-        private bool visible = true;
+        private bool visible; // summoned with F9, so a shipped build starts clean
+        private int savedVSyncCount;
+        private int savedTargetFrameRate;
         private GUIStyle labelStyle;
         private GUIStyle valueStyle;
         private float lineHeight;
 
         void OnEnable()
         {
-            // vsync would clamp frame time to the display and hide what the LOD flip saves
-            QualitySettings.vSyncCount = 0;
-            Application.targetFrameRate = -1;
+            savedVSyncCount = QualitySettings.vSyncCount;
+            savedTargetFrameRate = Application.targetFrameRate;
 
             Add("GPU Time", ProfilerCategory.Render, "GPU Frame Time", Format.Nanoseconds);
             Add("SetPass Calls", ProfilerCategory.Render, "SetPass Calls Count", spacerBefore: true);
@@ -130,16 +131,25 @@ namespace TankIO
             smoothedDeltaTime = Mathf.Lerp(smoothedDeltaTime, Time.unscaledDeltaTime, 0.05f);
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
             var keyboard = UnityEngine.InputSystem.Keyboard.current;
-            if (keyboard != null && keyboard.digit1Key.wasPressedThisFrame)
-                visible = !visible;
-            if (keyboard != null && keyboard.digit5Key.wasPressedThisFrame)
+            if (keyboard != null && keyboard.f9Key.wasPressedThisFrame)
+                SetVisible(!visible);
+            if (visible && keyboard != null && keyboard.digit5Key.wasPressedThisFrame)
                 anchorLeft = !anchorLeft;
 #else
-            if (Input.GetKeyDown(KeyCode.Alpha1))
-                visible = !visible;
-            if (Input.GetKeyDown(KeyCode.Alpha5))
+            if (Input.GetKeyDown(KeyCode.F9))
+                SetVisible(!visible);
+            if (visible && Input.GetKeyDown(KeyCode.Alpha5))
                 anchorLeft = !anchorLeft;
 #endif
+        }
+
+        // vsync would clamp frame time to the display and hide what the LOD flip saves, so it comes
+        // off only while the counters are up and goes back to whatever the player had after
+        void SetVisible(bool value)
+        {
+            visible = value;
+            QualitySettings.vSyncCount = value ? 0 : savedVSyncCount;
+            Application.targetFrameRate = value ? -1 : savedTargetFrameRate;
         }
 
         void OnGUI()

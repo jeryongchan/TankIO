@@ -128,6 +128,17 @@ namespace TankIO
             ClampCamera();
         }
 
+        // CenterOn, plus a return to play view when called from a tier that draws icons instead of
+        // meshes. a zoom already in the Near tier is left alone, since that is a view the player chose
+        public void FocusOn(Vector3 worldPoint)
+        {
+            if (cam == null)
+                cam = GetComponent<Camera>();
+            if (cam.orthographicSize >= midTierZoom)
+                cam.orthographicSize = Mathf.Clamp(overlayReferenceZoom, minZoom, maxZoom);
+            CenterOn(worldPoint);
+        }
+
         void PlaceAbove(Vector3 groundTarget)
         {
             cam.transform.position = groundTarget - cam.transform.forward * DistanceFor(cam.orthographicSize);
@@ -188,6 +199,8 @@ namespace TankIO
 
         void HandleScrollZoom()
         {
+            if (ScoreboardPanel.IsOpen)
+                return; // the wheel belongs to the roster's scroll list while it is up
             var mouse = Mouse.current;
             if (mouse == null)
                 return;

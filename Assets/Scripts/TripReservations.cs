@@ -138,7 +138,8 @@ namespace TankIO
                         reservations.RemoveAt(index);
                 }
             }
-            tiles.Clear();
+            // ids never repeat, so a dead tank's entry would otherwise linger for the life of the server
+            tilesByTank.Remove(tankId);
         }
 
         public enum Occupation

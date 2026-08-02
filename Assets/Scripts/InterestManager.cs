@@ -37,6 +37,8 @@ namespace TankIO
         {
             Instance = this;
             network = GetComponent<NetworkManager>();
+            // client ids never repeat, so a disconnected client's rect would otherwise linger for the life of the server
+            network.OnClientDisconnectCallback += clientId => watchRects.Remove(clientId);
         }
 
         // with no session both flags below read false, so an idle NetworkManager does nothing here
@@ -84,9 +86,18 @@ namespace TankIO
             return Instance.WatchRectContains(clientId, hq.PositionAtTime(now));
         }
 
+        // a show is a full spawn payload, so a pass that shows many at once is what fills the
+        // transport send queue and drops the client. logged, not throttled: the count and the
+        // client tell us whether a real burst happened or the same objects are being reshown
+        private const int BurstLogThreshold = 30;
+        private int showsThisPass;
+        private int hidesThisPass;
+
         // server only! for each tank and HQ (network objects) in the world, we check against each client if they should be visible (only those that crossed its rect!)
         void RefreshVisibility()
         {
+            showsThisPass = 0;
+            hidesThisPass = 0;
             double now = network.ServerTime.Time;
             IReadOnlyList<ulong> clientIds = network.ConnectedClientsIds;
             List<TankController> tanks = TankController.SpawnedTanks;
@@ -101,6 +112,22 @@ namespace TankIO
                 HqDetail hqDetail = hqDetails[index];
                 HqController hq = hqDetail.Hq;
                 RefreshVisibilityFor(hqDetail.NetworkObject, hq.CommanderId, hq.PositionAtTime(now), clientIds);
+            }
+            if (showsThisPass >= BurstLogThreshold)
+            {
+                Debug.Log(
+                    "Interest burst: "
+                        + showsThisPass
+                        + " shows, "
+                        + hidesThisPass
+                        + " hides across "
+                        + clientIds.Count
+                        + " clients, over "
+                        + tanks.Count
+                        + " tanks and "
+                        + hqDetails.Count
+                        + " details"
+                );
             }
         }
 
@@ -122,9 +149,15 @@ namespace TankIO
                 if (shouldBeVisible == visible) // If the visibility already match, skip this client and move on
                     continue;
                 if (shouldBeVisible)
+                {
                     networkObject.NetworkShow(clientId);
+                    showsThisPass++;
+                }
                 else
+                {
                     networkObject.NetworkHide(clientId);
+                    hidesThisPass++;
+                }
             }
         }
 

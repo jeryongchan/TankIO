@@ -17,6 +17,9 @@ namespace TankIO
         [SerializeField]
         private Button autoFireButton; // ground clicks become attack-moves while on
 
+        [SerializeField]
+        private Button centerOnHqButton;
+
         private readonly List<TankController> ownedTanks = new List<TankController>();
         private TMP_Text[] slotLabels;
         private TankController[] slotTanks; // per slot: its deployed tank, or null when the slot is a deploy button
@@ -41,14 +44,26 @@ namespace TankIO
                     autoFireLabel.text = on ? "Auto-Fire: ON" : "Auto-Fire: OFF";
                 });
             }
+            if (centerOnHqButton != null)
+            {
+                centerOnHqButton.onClick.AddListener(() =>
+                {
+                    HqController hq = HqController.LocalPlayerHq;
+                    if (hq != null && CameraController.Instance != null)
+                        CameraController.Instance.FocusOn(hq.transform.position);
+                });
+            }
         }
 
         void Update()
         {
-            // debug: a free full-strength tank past every gate, so combat stays testable without an economy grind
+#if UNITY_EDITOR
+            // debug: a free full-strength tank past every gate, so combat stays testable without an
+            // economy grind. never in a build, where it is just a cheat anyone can press
             Keyboard keyboard = Keyboard.current;
             if (keyboard != null && keyboard.f7Key.wasPressedThisFrame && HqController.LocalPlayerHq != null)
                 HqController.LocalPlayerHq.SubmitDebugDeployRpc();
+#endif
 
             HqController hq = HqController.LocalPlayerHq;
             bool shown = hq != null && CameraController.Lod == LodTier.Near;
@@ -56,6 +71,9 @@ namespace TankIO
                 button.gameObject.SetActive(shown);
             if (autoFireButton != null)
                 autoFireButton.gameObject.SetActive(shown);
+            // stays up at every zoom: finding your way back matters most when zoomed out
+            if (centerOnHqButton != null)
+                centerOnHqButton.gameObject.SetActive(hq != null);
             if (!shown)
                 return;
             double now = NetworkManager.Singleton.ServerTime.Time;

@@ -91,7 +91,7 @@ Material:
     - _RippleSpeed: 0.0327
     - _RippleStrength: 0.776
     - _RippleTiling: 0.05
-    - _ShoreWobble: 0.05
+    - _ShoreWobble: 0.1
     m_Colors:
     - _DirtTiling: {r: 0.4, g: 0.5, b: 0, a: 0}
     - _EdgeGlow: {r: 8, g: 8, b: 8, a: 0.8}

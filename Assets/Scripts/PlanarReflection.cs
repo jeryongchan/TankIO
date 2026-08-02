@@ -33,7 +33,7 @@ namespace TankIO
 
         void Reset()
         {
-            reflectLayers = ~LayerMask.GetMask("Water", "UI");
+            reflectLayers = ~LayerMask.GetMask("NoReflect", "UI");
         }
 
         void OnEnable()

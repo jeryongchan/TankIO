@@ -15,10 +15,10 @@ namespace TankIO
 
         private double garrisonCheckTimer; // server only
         private float garrisonDamageRemainder; // server only: fractional damage carried between checks
-        private LineRenderer garrisonTracer; // debug local cosmetic, reads garrisonVictimId
-
         [SerializeField]
-        private Material garrisonTracerMaterial; // the line is built in code, so this is all the look it has
+        // local cosmetic, reads garrisonVictimId. positions are set in world space, so the object's own
+        // transform is ignored; Tile texture mode holds dash size steady as the line stretches
+        private LineRenderer garrisonTracer;
 
         [SerializeField]
         private Transform garrisonMuzzle; // the roof turret
@@ -134,19 +134,6 @@ namespace TankIO
                     garrisonImpact.Stop(true, ParticleSystemStopBehavior.StopEmitting);
                 return;
             }
-            if (garrisonTracer == null)
-            {
-                GameObject tracerObject = new GameObject("GarrisonTracer");
-                tracerObject.transform.SetParent(transform, false);
-                garrisonTracer = tracerObject.AddComponent<LineRenderer>();
-                garrisonTracer.sharedMaterial = garrisonTracerMaterial; // the material carries the colour; an unlit shader ignores LineRenderer's vertex colours
-                garrisonTracer.startWidth = garrisonTracer.endWidth = 0.25f; // the shader carves this width into strands
-                garrisonTracer.positionCount = 2;
-                garrisonTracer.textureMode = LineTextureMode.Tile; // uv.x counts world units: dashes keep one size at any range
-                // vertex alpha carries 0-1 along the line; Tile mode leaves uv.x in world units
-                garrisonTracer.startColor = new Color(1f, 1f, 1f, 0f);
-                garrisonTracer.endColor = Color.white;
-            }
             Vector3 muzzlePoint = garrisonMuzzle != null
                 ? garrisonMuzzle.position
                 : transform.position + Vector3.up * 1.2f;
@@ -158,9 +145,12 @@ namespace TankIO
             towardMuzzle = towardMuzzle.sqrMagnitude > 0.0001f ? towardMuzzle.normalized : Vector3.forward;
             Vector3 impactPoint = victimPoint + towardMuzzle * garrisonImpactOffset;
 
-            garrisonTracer.enabled = true;
-            garrisonTracer.SetPosition(0, muzzlePoint);
-            garrisonTracer.SetPosition(1, impactPoint); // ends at the sparks, not inside the hull
+            if (garrisonTracer != null)
+            {
+                garrisonTracer.enabled = true;
+                garrisonTracer.SetPosition(0, muzzlePoint);
+                garrisonTracer.SetPosition(1, impactPoint); // ends at the sparks, not inside the hull
+            }
 
             if (garrisonImpactPrefab == null)
                 return;

@@ -1,3 +1,4 @@
+using Unity.Collections;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -16,12 +17,14 @@ namespace TankIO
             public bool Held;
             public ulong HolderCommanderId;
             public double HoldStartTime;
+            public FixedString32Bytes HolderName; // copied in at capture: a holder who logs off mid-hold still lands on the leaderboard under the name they played as
 
             public void NetworkSerialize<T>(BufferSerializer<T> serializer) where T : IReaderWriter
             {
                 serializer.SerializeValue(ref Held);
                 serializer.SerializeValue(ref HolderCommanderId);
                 serializer.SerializeValue(ref HoldStartTime);
+                serializer.SerializeValue(ref HolderName);
             }
         }
 
@@ -65,6 +68,9 @@ namespace TankIO
 
         public override void OnNetworkDespawn()
         {
+            // a hold in progress at shutdown still counts: the daily restart cron must not eat records
+            if (IsServer && replicatedHoldState.Value.Held && NetworkManager != null)
+                ReportEndedHold(replicatedHoldState.Value, NetworkManager.ServerTime.Time);
             if (Instance == this)
                 Instance = null;
         }
@@ -120,18 +126,40 @@ namespace TankIO
             if (holder == null)
             {
                 if (current.Held)
+                {
+                    ReportEndedHold(current, now);
                     replicatedHoldState.Value = new HoldState { Held = false };
+                }
                 return;
             }
             if (current.Held && current.HolderCommanderId == holder.CommanderId)
                 return; // same holder, keep the clock running
 
+            if (current.Held)
+                ReportEndedHold(current, now);
             replicatedHoldState.Value = new HoldState
             {
                 Held = true,
                 HolderCommanderId = holder.CommanderId,
-                HoldStartTime = now
+                HoldStartTime = now,
+                HolderName = holder.DisplayName
             };
+        }
+
+        // the name comes off the hold record rather than the HQ, which may already be despawned
+        static void ReportEndedHold(HoldState endedHold, double now)
+        {
+            double seconds = now - endedHold.HoldStartTime;
+            Leaderboard.ReportHold(endedHold.HolderName.ToString(), seconds);
+            if (Scoreboard.Instance != null)
+                Scoreboard.Instance.ServerReportHold(endedHold.HolderCommanderId, (float)seconds);
+        }
+
+        public bool TryGetHolder(out ulong holderCommanderId)
+        {
+            HoldState state = replicatedHoldState.Value;
+            holderCommanderId = state.HolderCommanderId;
+            return state.Held;
         }
 
         HqController DockedHq(double now)

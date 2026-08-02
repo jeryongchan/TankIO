@@ -113,7 +113,7 @@ namespace TankIO
         public void ServerSetCommanderBeforeSpawn(ulong id)
         {
             commanderId.Value = id;
-            displayName.Value = CommanderNames.Generate(id);
+            displayName.Value = CommanderNames.ForCommander(id);
         }
 
         // client-only, never replicated
@@ -187,6 +187,8 @@ namespace TankIO
 
             if (IsServer)
             {
+                if (Scoreboard.Instance != null)
+                    Scoreboard.Instance.ServerAdd(CommanderId, NetworkManager.ServerTime.Time);
                 TileGrid.Instance.WorldToTile(transform.position, out Vector2Int spawnTile);
                 replicatedGoldState.Value = new GoldState
                 {
@@ -225,6 +227,8 @@ namespace TankIO
             TripReservations.Release(NetworkObjectId);
             // the detail is a separate object, so nothing despawns it for us. null on a shutdown, where
             // NGO tears every object down in its own order and may have reached the detail first.
+            if (IsServer && Scoreboard.Instance != null)
+                Scoreboard.Instance.ServerRemove(CommanderId);
             if (IsServer && Detail != null)
                 Detail.NetworkObject.Despawn();
             replicatedMoveState.OnValueChanged -= OnMoveStateChanged;

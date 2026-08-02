@@ -78,8 +78,11 @@ namespace TankIO
             startTime = Time.unscaledTime;
         }
 
+        // editor only: 2, 3 and 4 are ordinary keys a player can hit by accident, and a hijacked
+        // camera looks like the game breaking
         void HandleKeys()
         {
+#if UNITY_EDITOR
 #if ENABLE_INPUT_SYSTEM && !ENABLE_LEGACY_INPUT_MANAGER
             var keyboard = UnityEngine.InputSystem.Keyboard.current;
             if (keyboard == null)
@@ -101,6 +104,7 @@ namespace TankIO
                 cameraController.LodEnabled = !cameraController.LodEnabled;
             if (release)
                 active = false;
+#endif
         }
     }
 }
